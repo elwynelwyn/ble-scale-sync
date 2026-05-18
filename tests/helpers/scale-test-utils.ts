@@ -3,17 +3,21 @@ import type {
   BleDeviceInfo,
   UserProfile,
   BodyComposition,
+  ScaleReading,
+  ScaleAdapter,
 } from '../../src/interfaces/scale-adapter.js';
 
 export function mockPeripheral(
   name: string,
   uuids: string[] = [],
   manufacturerData?: Buffer,
+  charUuids?: string[],
 ): BleDeviceInfo {
   return {
     localName: name,
     serviceUuids: uuids,
     manufacturerData,
+    ...(charUuids ? { characteristicUuids: charUuids } : {}),
   };
 }
 
@@ -44,4 +48,76 @@ export function assertPayloadRanges(payload: BodyComposition): void {
   expect(payload.physiqueRating).toBeLessThanOrEqual(9);
   expect(payload.bmr).toBeGreaterThan(0);
   expect(payload.metabolicAge).toBeGreaterThanOrEqual(12);
+}
+
+// ─── Shared adapter harness (#185) ───────────────────────────────────────────
+// Opt-in assertion helpers that collapse the per-file boilerplate (matches
+// matrix, parse-then-assert-non-null, computeMetrics happy-path). They are
+// plain assertion helpers — they do NOT generate describe/it, so bespoke
+// per-adapter cases stay inline and readable alongside them.
+
+/** A device under test: a bare local name (→ mockPeripheral) or a full BleDeviceInfo. */
+export type DeviceLike = string | BleDeviceInfo;
+
+function toDevice(d: DeviceLike): BleDeviceInfo {
+  return typeof d === 'string' ? mockPeripheral(d) : d;
+}
+
+/**
+ * Assert `matches()` is true for every `yes` device and false for every `no`
+ * device. The failing device is named in the assertion message so a single
+ * combined assertion still pinpoints the offender.
+ */
+export function expectMatches(
+  adapter: Pick<ScaleAdapter, 'matches'>,
+  cases: { yes?: DeviceLike[]; no?: DeviceLike[] },
+): void {
+  for (const d of cases.yes ?? []) {
+    const dev = toDevice(d);
+    expect(
+      adapter.matches(dev),
+      `expected matches(${dev.localName || JSON.stringify(dev)}) true`,
+    ).toBe(true);
+  }
+  for (const d of cases.no ?? []) {
+    const dev = toDevice(d);
+    expect(
+      adapter.matches(dev),
+      `expected matches(${dev.localName || JSON.stringify(dev)}) false`,
+    ).toBe(false);
+  }
+}
+
+/**
+ * Run `parseNotification`, assert it returned a reading, optionally assert
+ * specific numeric fields, and return the (non-null) reading.
+ */
+export function parseOk(
+  adapter: Pick<ScaleAdapter, 'parseNotification'>,
+  data: Buffer,
+  expected?: Partial<Record<keyof ScaleReading, number>>,
+): ScaleReading {
+  const reading = adapter.parseNotification(data);
+  expect(reading).not.toBeNull();
+  if (expected) {
+    for (const [key, value] of Object.entries(expected)) {
+      expect(reading![key as keyof ScaleReading], `reading.${key}`).toBeCloseTo(value as number, 4);
+    }
+  }
+  return reading!;
+}
+
+/**
+ * computeMetrics happy-path: assert the weight is echoed and the payload
+ * passes the standard range sanity, then return it for any extra assertions.
+ */
+export function expectValidMetrics(
+  adapter: Pick<ScaleAdapter, 'computeMetrics'>,
+  reading: ScaleReading,
+  profile: UserProfile = defaultProfile(),
+): BodyComposition {
+  const payload = adapter.computeMetrics(reading, profile);
+  expect(payload.weight).toBeCloseTo(reading.weight, 4);
+  assertPayloadRanges(payload);
+  return payload;
 }

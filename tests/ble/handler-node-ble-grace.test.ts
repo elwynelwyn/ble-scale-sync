@@ -133,8 +133,16 @@ describe('handler-node-ble broadcastScanNodeBle grace timer (#163 follow-up)', (
       {},
     );
 
-    // Wait one tick so the handler attaches the PropertiesChanged listener.
-    await new Promise((r) => setImmediate(r));
+    // broadcastScanNodeBle awaits getDbusNext() (an uncached dynamic
+    // import('dbus-next') on the FIRST test) plus a callMethod before it
+    // attaches the PropertiesChanged listener, so a fixed setImmediate flush
+    // is race-prone. Wait deterministically until the listener is registered
+    // (the mock ServiceData poll returns undefined, so the emitted advert is
+    // the only path to a reading here).
+    await vi.waitUntil(() => device.helper.listenerCount('PropertiesChanged') > 0, {
+      timeout: 2000,
+      interval: 10,
+    });
     device.helper.emit('PropertiesChanged', { ServiceData: serviceDataPayload() });
 
     const result = await promise;

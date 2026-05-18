@@ -75,6 +75,12 @@ const CHR_AE02 = uuid16(0xae02);
 const SVC_T1 = 'ffe0';
 const SVC_T2 = 'fff0';
 
+// SIG Body Composition / Weight Scale services. A 'renpho'-named device that
+// advertises these but NO QN vendor service is a Renpho ES-WBE28 (#191),
+// handled by RenphoScaleAdapter — see matches().
+const SVC_SIG_BCS = '181b';
+const SVC_SIG_WSS = '181d';
+
 /** Seconds from Unix epoch to 2000-01-01 00:00:00 UTC. */
 const SCALE_EPOCH_OFFSET = 946684800;
 
@@ -268,26 +274,43 @@ export class QnScaleAdapter implements ScaleAdapter {
     }
 
     const name = (device.localName || '').toLowerCase();
+    const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
+    const hasQnVendor = uuids.some(
+      (u) => u === SVC_T1 || u === SVC_T2 || u === uuid16(0xffe0) || u === uuid16(0xfff0),
+    );
+
     const nameMatch =
       name.includes('qn-scale') ||
       name.includes('renpho') ||
       name.includes('senssun') ||
       name.includes('sencor');
-    if (nameMatch) return true;
+    if (nameMatch) {
+      // #191: a device named only via 'renpho' (not the QN-specific names)
+      // that advertises a SIG Weight Scale / Body Composition service but NO
+      // QN vendor service is a Renpho ES-WBE28 (proprietary 0x2A9D payload),
+      // handled by RenphoScaleAdapter. Mirror its mutual-exclusion
+      // symmetrically so this (registry-earlier) adapter does not shadow it.
+      // QN-protocol Renpho scales advertise 0xFFE0/0xFFF0, or no SIG service
+      // (e.g. Linux scans with empty UUIDs), so they are unaffected.
+      const onlyRenpho =
+        name.includes('renpho') &&
+        !name.includes('qn-scale') &&
+        !name.includes('senssun') &&
+        !name.includes('sencor');
+      const looksLikeWbe28 =
+        !hasQnVendor &&
+        uuids.some(
+          (u) =>
+            u === SVC_SIG_BCS || u === SVC_SIG_WSS || u === uuid16(0x181b) || u === uuid16(0x181d),
+        );
+      if (onlyRenpho && looksLikeWbe28) return false;
+      return true;
+    }
 
     // Fallback: match by QN vendor service UUID, but only for unnamed devices.
     // Named devices (e.g. "eufy T9149") should match their own specific adapter
     // rather than being caught by the generic FFF0/FFE0 UUID check.
-    if (!name) {
-      const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
-      if (
-        uuids.some(
-          (u) => u === SVC_T1 || u === SVC_T2 || u === uuid16(0xffe0) || u === uuid16(0xfff0),
-        )
-      ) {
-        return true;
-      }
-    }
+    if (!name && hasQnVendor) return true;
 
     return false;
   }

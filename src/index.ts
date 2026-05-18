@@ -6,6 +6,7 @@ import { setDisplayUsers } from './ble/handler-mqtt-proxy/index.js';
 import { bootstrapMqttProxy } from './ble/mqtt-proxy-bootstrap.js';
 import { notifyReady, startHeartbeat, stopHeartbeat } from './runtime/systemd-watchdog.js';
 import { adapters } from './scales/index.js';
+import { assertRegistryIntegrity } from './scales/registry-check.js';
 import { createLogger, setLogLevel, LogLevel } from './logger.js';
 import { errMsg } from './utils/error.js';
 import { runHealthchecks } from './orchestrator.js';
@@ -151,6 +152,9 @@ async function main(): Promise<void> {
     log.info(`Scanning for scale ${ctx.scaleMac}...`);
   } else {
     log.info(`Scanning for any recognized scale...`);
+  }
+  for (const w of assertRegistryIntegrity(adapters)) {
+    log.warn(`Adapter registry: ${w}`);
   }
   log.info(`Adapters: ${adapters.map((a) => a.name).join(', ')}\n`);
 

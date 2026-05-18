@@ -10,10 +10,10 @@ import { uuid16, buildPayload, xorChecksum, type ScaleBodyComp } from './body-co
 
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
-const ONEBYONE_NAMES = ['t9146', 't9147', 'health scale'];
+const ONEBYONE_NAMES = ['t9146', 't9147', 't9120', 'health scale'];
 
 /**
- * Adapter for Eufy C1/P1 and "Health Scale" branded 1byone devices.
+ * Adapter for Eufy C1/P1/A1 and "Health Scale" branded 1byone devices.
  *
  * Protocol: service 0xFFF0, notify 0xFFF4, write 0xFFF1.
  * Unlock via clock-sync frame: [0xF1, yearHi, yearLo, month, day, hour, min, sec].
@@ -31,7 +31,12 @@ export class OneByoneAdapter implements ScaleAdapter {
 
   matches(device: BleDeviceInfo): boolean {
     const name = (device.localName || '').toLowerCase();
-    return ONEBYONE_NAMES.some((n) => name.includes(n));
+    if (ONEBYONE_NAMES.some((n) => name.includes(n))) return true;
+    // Post-discovery disambiguation of the shared 0xFFF0 vendor service: the
+    // 1byone/Eufy notify characteristic 0xFFF4 is unique to this family (Inlife
+    // never exposes it), so it identifies the device when the broadcast name is
+    // absent at connect time (e.g. BlueZ by-MAC). #177
+    return (device.characteristicUuids ?? []).includes(uuid16(0xfff4));
   }
 
   /**

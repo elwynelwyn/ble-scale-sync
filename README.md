@@ -79,7 +79,7 @@ Requires Node.js v22+ and a BLE adapter. See the **[full install guide](https://
 
 ## Features
 
-- **[24+ scale brands](https://blescalesync.dev/guide/supported-scales).** Xiaomi (Mi Scale 2 passive broadcast), Renpho (Elis 1, FITINDEX, Sencor, QN-Scale), Eufy, Yunmai, Beurer, Sanitas, Medisana, and more.
+- **[25+ scale brands](https://blescalesync.dev/guide/supported-scales).** Xiaomi (Mi Scale 2 passive broadcast), Renpho (Elis 1, FITINDEX, Sencor, QN-Scale), Eufy, Yunmai, Beurer (incl. BF720 / BF105), Sanitas, Medisana, and more.
 - **[7 export targets](https://blescalesync.dev/exporters).** Garmin Connect, Strava, MQTT (Home Assistant), InfluxDB, Webhook, Ntfy, File (CSV/JSONL).
 - **[10 body metrics](https://blescalesync.dev/body-composition).** BIA-based body composition from weight + impedance.
 - **[Multi-user](https://blescalesync.dev/multi-user).** Automatic weight-based identification with per-user exporters.
@@ -88,7 +88,7 @@ Requires Node.js v22+ and a BLE adapter. See the **[full install guide](https://
 - **[BLE diagnostic tool](https://blescalesync.dev/troubleshooting).** `npm run diagnose` for detailed BLE troubleshooting.
 - **[Home Assistant Add-on](https://blescalesync.dev/guide/home-assistant-addon).** One-click install via My Home Assistant badge, MQTT auto-discovery, UI-driven config, Garmin token bootstrap, and MFA workaround.
 - **[ESP32 BLE proxy](https://blescalesync.dev/guide/esp32-proxy).** Use a remote ESP32 as a BLE radio over MQTT, with a built-in embedded broker for zero-config setup, simplified Docker deployment, and optional display.
-- **[ESPHome Bluetooth proxy](https://blescalesync.dev/guide/esphome-proxy).** Reuse an existing ESPHome BT proxy mesh (Home Assistant) as a BLE radio via Native API (experimental, broadcast-only in phase 1).
+- **[ESPHome Bluetooth proxy](https://blescalesync.dev/guide/esphome-proxy).** Reuse an existing ESPHome BT proxy mesh (Home Assistant) as a BLE radio via Native API: broadcast and GATT scales, multi-proxy with RSSI auto-pick.
 - **BLE adapter selection.** `ble.adapter: hci1` for multi-adapter setups (Linux).
 - **Broadcast mode.** Supports non-connectable scales that only advertise weight via BLE advertisements.
 - **Linux stability hardening.** Auto-recovery for the BlueZ "stuck discovery" state via a consecutive-failure watchdog, plus optional [systemd `Type=notify`](https://blescalesync.dev/troubleshooting#ble-discovery-stops-working-after-hours-bluez-stuck-state) integration for whole-loop freezes.
@@ -110,6 +110,8 @@ Requires Node.js v22+ and a BLE adapter. See the **[full install guide](https://
 <td align="center"><a href="https://github.com/APIUM"><img src="https://avatars.githubusercontent.com/u/9067013?v=4" width="60" height="60" alt="APIUM"><br><sub>APIUM</sub></a></td>
 <td align="center"><a href="https://github.com/marcelorodrigo"><img src="https://avatars.githubusercontent.com/u/443962?v=4" width="60" height="60" alt="marcelorodrigo"><br><sub>marcelorodrigo</sub></a></td>
 <td align="center"><a href="https://github.com/fromport"><img src="https://avatars.githubusercontent.com/u/5751308?v=4" width="60" height="60" alt="fromport"><br><sub>fromport</sub></a></td>
+<td align="center"><a href="https://github.com/boildead"><img src="https://avatars.githubusercontent.com/u/17303016?v=4" width="60" height="60" alt="boildead"><br><sub>boildead</sub></a></td>
+<td align="center"><a href="https://github.com/alexw23"><img src="https://avatars.githubusercontent.com/u/1505496?v=4" width="60" height="60" alt="alexw23"><br><sub>alexw23</sub></a></td>
 </tr></table>
 
 ## Contributing
@@ -119,3 +121,13 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, project struct
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE) for details.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=KristianP26%2Fble-scale-sync&type=date&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=KristianP26/ble-scale-sync&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=KristianP26/ble-scale-sync&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KristianP26/ble-scale-sync&type=date&legend=top-left" />
+ </picture>
+</a>
