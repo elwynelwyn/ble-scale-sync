@@ -43,6 +43,28 @@ describe('QnScaleAdapter', () => {
       expect(adapter.matches(p)).toBe(true);
     });
 
+    // #191: a 'renpho' device advertising SIG WSS/BCS but no QN vendor service
+    // is a Renpho ES-WBE28 — QN must defer to RenphoScaleAdapter.
+    it('does not match "renpho" with SIG WSS 0x181D and no QN vendor service', () => {
+      const adapter = makeAdapter();
+      expect(adapter.matches(mockPeripheral('Renpho Body Scale', ['181d']))).toBe(false);
+    });
+
+    it('does not match "renpho" with SIG BCS 0x181B and no QN vendor service', () => {
+      const adapter = makeAdapter();
+      expect(adapter.matches(mockPeripheral('renpho-scale', ['181b']))).toBe(false);
+    });
+
+    it('still matches "renpho" with SIG service AND a QN vendor service (QN-protocol)', () => {
+      const adapter = makeAdapter();
+      expect(adapter.matches(mockPeripheral('Renpho', ['181b', 'ffe0']))).toBe(true);
+    });
+
+    it('still matches "renpho" with empty UUIDs (Linux QN scan, not ES-WBE28)', () => {
+      const adapter = makeAdapter();
+      expect(adapter.matches(mockPeripheral('Renpho Scale', []))).toBe(true);
+    });
+
     it('matches "SENSSUN" with full 128-bit FFF0 UUID', () => {
       const adapter = makeAdapter();
       const p = mockPeripheral('SENSSUN', ['0000fff000001000800000805f9b34fb']);

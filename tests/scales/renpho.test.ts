@@ -24,6 +24,12 @@ describe('RenphoScaleAdapter', () => {
       expect(adapter.matches(p)).toBe(true);
     });
 
+    it('matches a real ES-WBE28 advert (renpho + SIG WSS/BCS, no QN UUID) (#191)', () => {
+      const adapter = makeAdapter();
+      const p = mockPeripheral('Renpho Body Scale', ['181b', '181d']);
+      expect(adapter.matches(p)).toBe(true);
+    });
+
     it('rejects "renpho" with QN service UUID FFE0', () => {
       const adapter = makeAdapter();
       const p = mockPeripheral('Renpho Scale', ['ffe0']);
