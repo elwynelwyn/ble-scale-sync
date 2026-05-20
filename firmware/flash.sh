@@ -28,7 +28,8 @@ cd "$(dirname "$0")"
 # because lv_binding_micropython is pinned to that version for LVGL compatibility.
 MICROPYTHON_VERSION="1.27.0"
 
-# Release dates differ per chip family
+# Release dates differ per chip family. Keep ESP32 pinned to a known-good
+# build — intermediate dates have served 404s from micropython.org.
 MICROPYTHON_DATE_ESP32="20251209"
 MICROPYTHON_DATE_S3="20251209"
 

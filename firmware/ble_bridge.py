@@ -144,7 +144,6 @@ class BleBridge:
         self._seen = {}
         self._seen_cycle = 0
         self._cap_logged = False
-        self._oom_logged = False
 
     def set_on_disconnect(self, callback):
         """Set callback for unexpected peripheral disconnect (fires at most once)."""
