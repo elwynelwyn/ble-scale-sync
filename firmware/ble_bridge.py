@@ -28,10 +28,20 @@ def _norm_uuid(uuid):
 
 
 def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
-    """Parse a single raw BLE advertisement into a device dict."""
+    """Parse a single raw BLE advertisement into a device dict.
+
+    Handles 16/32/128-bit Service UUIDs (AD types 0x02-0x07) and Service Data
+    (0x16/0x20/0x21). UUIDs are advertised little-endian per BT Core spec;
+    32-bit and 128-bit UUIDs are emitted as the full 32-char canonical form
+    (32-bit expanded via the Bluetooth base UUID) because Node-side
+    normalizeUuid only expands the 4-char (16-bit) form. 16-bit UUIDs are kept
+    as 4-char hex so existing adapters and Node-side normalization continue to
+    match.
+    """
     mac = ":".join("%02X" % b for b in addr_bytes)
     name = ""
     services = []
+    service_data = []
     mfr_id = None
     mfr_data = None
 
@@ -54,6 +64,33 @@ def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
             for j in range(0, len(ad_payload) - 1, 2):
                 uuid = ad_payload[j] | (ad_payload[j + 1] << 8)
                 services.append("%04x" % uuid)
+        elif ad_type == 0x05 or ad_type == 0x04:  # 32-bit Service UUIDs
+            for j in range(0, len(ad_payload) - 3, 4):
+                val = (
+                    ad_payload[j]
+                    | (ad_payload[j + 1] << 8)
+                    | (ad_payload[j + 2] << 16)
+                    | (ad_payload[j + 3] << 24)
+                )
+                services.append("%08x" % val + _BT_BASE_SUFFIX)
+        elif ad_type == 0x07 or ad_type == 0x06:  # 128-bit Service UUIDs
+            for j in range(0, len(ad_payload) - 15, 16):
+                services.append(ad_payload[j:j + 16][::-1].hex())
+        elif ad_type == 0x16 and len(ad_payload) >= 2:  # Service Data — 16-bit
+            uuid = "%04x" % (ad_payload[0] | (ad_payload[1] << 8))
+            service_data.append({"uuid": uuid, "data": ad_payload[2:].hex()})
+        elif ad_type == 0x20 and len(ad_payload) >= 4:  # Service Data — 32-bit
+            val = (
+                ad_payload[0]
+                | (ad_payload[1] << 8)
+                | (ad_payload[2] << 16)
+                | (ad_payload[3] << 24)
+            )
+            uuid = "%08x" % val + _BT_BASE_SUFFIX
+            service_data.append({"uuid": uuid, "data": ad_payload[4:].hex()})
+        elif ad_type == 0x21 and len(ad_payload) >= 16:  # Service Data — 128-bit
+            uuid = ad_payload[0:16][::-1].hex()
+            service_data.append({"uuid": uuid, "data": ad_payload[16:].hex()})
         elif ad_type == 0xFF and length >= 3:  # Manufacturer Specific
             mfr_id = ad_payload[0] | (ad_payload[1] << 8)
             mfr_data = ad_payload[2:].hex()
@@ -70,6 +107,8 @@ def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
     if mfr_id is not None:
         entry["manufacturer_id"] = mfr_id
         entry["manufacturer_data"] = mfr_data
+    if service_data:
+        entry["service_data"] = service_data
     return entry
 
 
@@ -86,6 +125,8 @@ def _merge_entry(seen, entry):
             seen[mac]["manufacturer_data"] = entry["manufacturer_data"]
         if entry.get("services") and not seen[mac].get("services"):
             seen[mac]["services"] = entry["services"]
+        if entry.get("service_data") and not seen[mac].get("service_data"):
+            seen[mac]["service_data"] = entry["service_data"]
     else:
         seen[mac] = entry
 
@@ -162,7 +203,10 @@ class BleBridge:
             results = [
                 v
                 for v in seen.values()
-                if v["name"] or v.get("manufacturer_data") or v.get("services")
+                if v["name"]
+                or v.get("manufacturer_data")
+                or v.get("services")
+                or v.get("service_data")
             ]
             seen.clear()
             raw_results.clear()
@@ -234,7 +278,10 @@ class BleBridge:
             results = [
                 v
                 for v in self._seen.values()
-                if v["name"] or v.get("manufacturer_data") or v.get("services")
+                if v["name"]
+                or v.get("manufacturer_data")
+                or v.get("services")
+                or v.get("service_data")
             ]
             self._seen = {}
             return results
@@ -242,7 +289,10 @@ class BleBridge:
         return [
             v
             for v in self._seen.values()
-            if v["name"] or v.get("manufacturer_data") or v.get("services")
+            if v["name"]
+            or v.get("manufacturer_data")
+            or v.get("services")
+            or v.get("service_data")
         ]
 
     def stop_streaming(self):
