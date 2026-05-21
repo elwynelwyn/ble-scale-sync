@@ -103,7 +103,11 @@ export async function mqttGattConnect(
         }
         if (topic === t.error) {
           client.removeListener('message', handler);
-          reject(new Error(`ESP32 error: ${payload.toString()}`));
+          // Older firmware (and MicroPython exceptions like asyncio.TimeoutError
+          // whose str() is empty) can publish a blank payload — surface a
+          // placeholder so the host log is not a dangling "ESP32 error:".
+          const detail = payload.toString() || '(no detail)';
+          reject(new Error(`ESP32 error: ${detail}`));
         }
       };
       client.on('message', handler);

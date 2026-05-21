@@ -6,7 +6,7 @@ import { bleLog, withTimeout, errMsg, IMPEDANCE_GRACE_MS } from '../types.js';
 import { AsyncQueue } from '../async-queue.js';
 import { topics } from './topics.js';
 import { type MqttClient, getOrCreatePersistentClient } from './client.js';
-import { mqttGattConnect, mqttGattDisconnect } from './gatt.js';
+import { mqttGattConnect, mqttGattDisconnect, type MqttBleDevice } from './gatt.js';
 import { registerScaleMac } from './display.js';
 import { type ScanResultEntry, toBleDeviceInfo } from './scan.js';
 
@@ -268,31 +268,33 @@ export class ReadingWatcher {
     this.gattStartedAt = Date.now();
 
     const t = topics(this.config.topic_prefix, this.config.device_id);
-    const client = await getOrCreatePersistentClient(this.config);
-    if (!this.profile) {
-      bleLog.warn(
-        'No user profile configured for GATT reading. Body composition will be inaccurate. ' +
-          'Set a user profile in config.yaml to get correct results.',
-      );
-    }
-    const profile: UserProfile = this.profile ?? {
-      height: 170,
-      age: 30,
-      gender: 'male',
-      isAthlete: false,
-    };
-
-    bleLog.info(`Connecting via GATT proxy to ${adapter.name} (${entry.address})...`);
-    const { charMap, device } = await mqttGattConnect(
-      client,
-      t,
-      entry.address,
-      entry.addr_type ?? 0,
-    );
+    let client: MqttClient | undefined;
+    let device: MqttBleDevice | undefined;
+    // Guard the whole connect+read sequence: if mqttGattConnect (or the client
+    // lookup) throws, the finally must still clear gattInProgress — otherwise a
+    // single failed connect blocks every later GATT retry until the 90s
+    // stale-reset (#201).
     try {
+      client = await getOrCreatePersistentClient(this.config);
+      if (!this.profile) {
+        bleLog.warn(
+          'No user profile configured for GATT reading. Body composition will be inaccurate. ' +
+            'Set a user profile in config.yaml to get correct results.',
+        );
+      }
+      const profile: UserProfile = this.profile ?? {
+        height: 170,
+        age: 30,
+        gender: 'male',
+        isAthlete: false,
+      };
+
+      bleLog.info(`Connecting via GATT proxy to ${adapter.name} (${entry.address})...`);
+      const connected = await mqttGattConnect(client, t, entry.address, entry.addr_type ?? 0);
+      device = connected.device;
       const raw = await withTimeout(
         waitForRawReading(
-          charMap,
+          connected.charMap,
           device,
           adapter,
           profile,
@@ -305,8 +307,8 @@ export class ReadingWatcher {
       this.queue.push(raw);
     } finally {
       this.gattInProgress = false;
-      device.cleanup();
-      await mqttGattDisconnect(client, t).catch(() => {});
+      device?.cleanup();
+      if (client) await mqttGattDisconnect(client, t).catch(() => {});
     }
   }
 

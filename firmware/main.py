@@ -125,6 +125,13 @@ async def publish_error(message):
         await client.publish(topic("error"), message, qos=0)
     except Exception:
         pass
+
+
+def describe_exc(e):
+    """Readable exception text. MicroPython's str() is empty for many built-in
+    exceptions (e.g. asyncio.TimeoutError), so fall back to the type name —
+    otherwise the host only sees a blank "ESP32 error:" (#201)."""
+    return str(e) or type(e).__name__
     print(f"Error: {message}")
 
 
@@ -182,7 +189,7 @@ async def _streaming_scan_loop():
                 ui.on_publish_tick()
         except Exception as e:
             try:
-                await publish_error(f"Scan publish failed: {e}")
+                await publish_error(f"Scan publish failed: {describe_exc(e)}")
             except Exception:
                 print(f"Scan error: {e}")
 
@@ -238,7 +245,7 @@ async def _batch_scan_loop():
                 ui.on_publish_tick()
         except Exception as e:
             try:
-                await publish_error(f"Scan failed: {e}")
+                await publish_error(f"Scan failed: {describe_exc(e)}")
             except Exception:
                 print(f"Scan error: {e}")
         finally:
@@ -457,7 +464,7 @@ async def main():
                     if "/response" not in suffix:
                         await handle_read(suffix)
             except Exception as e:
-                await publish_error(str(e))
+                await publish_error(describe_exc(e))
 
         await asyncio.sleep_ms(50)
         gc_counter += 1

@@ -1550,5 +1550,108 @@ describe('handler-mqtt-proxy', () => {
       );
       expect(connectCalls).toHaveLength(1);
     });
+
+    it('ReadingWatcher retries GATT after a failed connect (#201)', async () => {
+      // Regression: a failed mqttGattConnect must clear gattInProgress so the
+      // next scan batch can retry. Before the fix, the flag leaked `true` and
+      // every later GATT attempt was skipped until the 90s stale-reset.
+      const adapter = createDualModeAdapter();
+      const watcher = new ReadingWatcher(MQTT_PROXY_CONFIG, [adapter], undefined, PROFILE);
+      await watcher.start();
+
+      let connectCount = 0;
+      const origPublish = mockClient.publishAsync;
+      mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+        if (topic === `${PREFIX}/connect`) {
+          connectCount++;
+          if (connectCount === 1) {
+            // First attempt: ESP32 reports a connect failure.
+            queueMicrotask(() => mockClient._simulateMessage(`${PREFIX}/error`, 'connect failed'));
+          } else {
+            // Second attempt: succeeds.
+            queueMicrotask(() =>
+              mockClient._simulateMessage(
+                `${PREFIX}/connected`,
+                JSON.stringify({
+                  chars: [
+                    { uuid: GATT_NOTIFY_UUID, properties: ['notify'] },
+                    { uuid: GATT_WRITE_UUID, properties: ['write'] },
+                  ],
+                }),
+              ),
+            );
+          }
+        }
+        if (topic === `${PREFIX}/write/${GATT_WRITE_UUID}`) {
+          queueMicrotask(() => {
+            const buf = Buffer.alloc(4);
+            buf.writeUInt16LE(8000, 0); // 80.00 kg
+            buf.writeUInt16LE(450, 2); // impedance 450
+            mockClient._simulateMessage(`${PREFIX}/notify/${GATT_NOTIFY_UUID}`, buf);
+          });
+        }
+        return origPublish(topic, payload);
+      });
+
+      const scanMsg = JSON.stringify([
+        {
+          address: 'AA:BB:CC:DD:EE:FF',
+          name: 'DualScale',
+          rssi: -80,
+          services: ['ffe0'],
+          addr_type: 0,
+        },
+      ]);
+
+      // First batch → GATT connect #1 fails.
+      mockClient._simulateMessage(`${PREFIX}/scan/results`, scanMsg);
+      // Let the failure settle so gattInProgress is reset.
+      await new Promise((r) => setTimeout(r, 50));
+      // Second batch → GATT connect #2 must be attempted (not skipped).
+      mockClient._simulateMessage(`${PREFIX}/scan/results`, scanMsg);
+
+      const raw = await watcher.nextReading();
+      expect(raw.reading.weight).toBe(80.0);
+      expect(connectCount).toBe(2);
+    });
+
+    it('surfaces a placeholder when the ESP32 error payload is empty (#201)', async () => {
+      const adapter = createGattAdapter();
+
+      mockClient.subscribeAsync = vi.fn(async (topic: string) => {
+        if (topic === `${PREFIX}/status`) {
+          queueMicrotask(() => mockClient._simulateMessage(`${PREFIX}/status`, 'online'));
+        }
+        if (topic === `${PREFIX}/scan/results`) {
+          queueMicrotask(() =>
+            mockClient._simulateMessage(
+              `${PREFIX}/scan/results`,
+              JSON.stringify([
+                { address: 'AA:BB:CC:DD:EE:FF', name: 'GattScale', rssi: -50, services: [] },
+              ]),
+            ),
+          );
+        }
+        return [];
+      });
+
+      const origPublish = mockClient.publishAsync;
+      mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+        if (topic === `${PREFIX}/connect`) {
+          // ESP32 reports an error with an empty payload (old firmware / a
+          // MicroPython exception whose str() is empty).
+          queueMicrotask(() => mockClient._simulateMessage(`${PREFIX}/error`, ''));
+        }
+        return origPublish(topic, payload);
+      });
+
+      await expect(
+        scanAndReadRaw({
+          adapters: [adapter],
+          profile: PROFILE,
+          mqttProxy: MQTT_PROXY_CONFIG,
+        }),
+      ).rejects.toThrow('ESP32 error: (no detail)');
+    });
   });
 });
