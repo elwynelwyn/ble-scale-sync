@@ -490,11 +490,16 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
         matchedAdapter = discoveredAdapter;
       } else {
         // Target-MAC mode: match adapter post-connect using full service list
+        // and the discovered characteristics, so char-aware adapters (#177, #235)
+        // can disambiguate devices that share a generic vendor service (fff0).
         const serviceUuids = services.map((s) => normalizeUuid(s.uuid));
+        const characteristicUuids = services.flatMap((s) =>
+          (s.characteristics ?? []).map((c) => normalizeUuid(c.uuid)),
+        );
         const name = peripheral.advertisement?.localName ?? '';
         bleLog.debug(`Services: [${serviceUuids.join(', ')}]`);
 
-        const info: BleDeviceInfo = { localName: name, serviceUuids };
+        const info: BleDeviceInfo = { localName: name, serviceUuids, characteristicUuids };
         const found = adapters.find((a) => a.matches(info));
         if (!found) {
           throw new Error(

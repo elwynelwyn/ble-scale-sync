@@ -74,6 +74,9 @@ const CHR_AE02 = uuid16(0xae02);
 // Service UUIDs for matching
 const SVC_T1 = 'ffe0';
 const SVC_T2 = 'fff0';
+// AE00 vendor service (newer QN firmware, e.g. Renpho ES-CS20M). Unique to QN
+// scales — never shared with the fff0 Inlife/1byone/Eufy cluster (#235).
+const SVC_AE00 = 'ae00';
 
 // SIG Body Composition / Weight Scale services. A 'renpho'-named device that
 // advertises these but NO QN vendor service is a Renpho ES-WBE28 (#191),
@@ -311,6 +314,18 @@ export class QnScaleAdapter implements ScaleAdapter {
 
     const name = (device.localName || '').toLowerCase();
     const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
+
+    // AE00 is a QN-only service (Renpho ES-CS20M / newer firmware), never shared
+    // with the fff0 Inlife/1byone/Eufy cluster. It positively identifies a QN
+    // scale even when the device also carries a non-QN name and advertises fff0
+    // (e.g. GE CS 10 G "Fit Plus", #235), so check it before name/fallback logic.
+    // Compare both short 16-bit and full 128-bit forms, mirroring hasQnVendor.
+    const chars = (device.characteristicUuids || []).map((u) => u.toLowerCase());
+    const hasAe00 =
+      uuids.some((u) => u === SVC_AE00 || u === uuid16(0xae00)) ||
+      chars.some((u) => u === 'ae01' || u === 'ae02' || u === CHR_AE01 || u === CHR_AE02);
+    if (hasAe00) return true;
+
     const hasQnVendor = uuids.some(
       (u) => u === SVC_T1 || u === SVC_T2 || u === uuid16(0xffe0) || u === uuid16(0xfff0),
     );

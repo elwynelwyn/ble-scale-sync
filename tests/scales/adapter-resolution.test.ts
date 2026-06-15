@@ -42,3 +42,45 @@ describe('adapter resolution (#177 0xFFF0 collision)', () => {
     expect(matched?.name).toBe('Beurer BF720/BF105');
   });
 });
+
+// Regression for #235: a GE CS 10 G ("Fit Plus") advertises a non-QN name and
+// BOTH the fff0 cluster (fff0/fff1/fff2) and the QN-only AE00 cluster
+// (ae00/ae01/ae02). Before the fix the QN adapter ignored AE00 and rejected the
+// named device, so the registry-later Inlife adapter grabbed it via its bare
+// fff0 fallback and drove the wrong fff1/fff2 protocol. AE00 must resolve to QN.
+describe('adapter resolution (#235 fff0+ae00 QN/Inlife collision)', () => {
+  it('resolves a "Fit Plus" (name + fff0 + ae00 service) to "QN Scale"', () => {
+    const info: BleDeviceInfo = {
+      localName: 'Fit Plus',
+      serviceUuids: [
+        uuid16(0x1800),
+        uuid16(0x180f),
+        uuid16(0x180a),
+        uuid16(0xfff0),
+        uuid16(0xae00),
+      ],
+    };
+    const matched = adapters.find((a) => a.matches(info));
+    expect(matched?.name).toBe('QN Scale');
+  });
+
+  it('resolves a "Fit Plus" via ae01/ae02 characteristics (no top-level ae00 service)', () => {
+    const info: BleDeviceInfo = {
+      localName: 'Fit Plus',
+      serviceUuids: [uuid16(0xfff0)],
+      characteristicUuids: [uuid16(0xfff1), uuid16(0xfff2), uuid16(0xae01), uuid16(0xae02)],
+    };
+    const matched = adapters.find((a) => a.matches(info));
+    expect(matched?.name).toBe('QN Scale');
+  });
+
+  it('does not regress a real Inlife device without AE00 -> "Inlife"', () => {
+    const info: BleDeviceInfo = {
+      localName: '000fatscale01',
+      serviceUuids: [uuid16(0xfff0)],
+      characteristicUuids: [uuid16(0xfff1), uuid16(0xfff2)],
+    };
+    const matched = adapters.find((a) => a.matches(info));
+    expect(matched?.name).toBe('Inlife');
+  });
+});
