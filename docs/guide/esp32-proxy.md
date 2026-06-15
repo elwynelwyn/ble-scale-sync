@@ -396,3 +396,7 @@ IDF heap before connect: free=<bytes> largest=<bytes>
 - A healthy `largest` plus a timeout points at radio contention instead; move the board closer to the scale and retry.
 
 Broadcast-only scales are unaffected and work on every board.
+
+### A GATT-only scale never connects with auto_connect
+
+Some scales (for example the QN-Scale) expose no broadcast data and must be GATT-connected to read. With `auto_connect` on, the ESP32 connects itself the instant it sees a known scale MAC, but it only treats a MAC as known once the server has told it about that MAC. Set `ble.scale_mac` to your scale so the server seeds that MAC to the ESP32 at startup and the autonomous connect can fire on the first sighting. Without a `scale_mac`, the server still recovers by falling back to a slower host-initiated connect after a few scan cycles, so a configured `scale_mac` is recommended for GATT-only scales.
