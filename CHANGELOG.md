@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.17.0](https://github.com/KristianP26/ble-scale-sync/compare/v1.16.1...v1.17.0) (2026-06-15)
+
+
+### Added
+
+* **ble:** add Robi S9 adapter (Lefu/Fitdays FFB0-new protocol) ([#228](https://github.com/KristianP26/ble-scale-sync/issues/228)) ([4a8fda5](https://github.com/KristianP26/ble-scale-sync/commit/4a8fda56fa57bbb4f97b2a7cb36ca475a70e5515))
+
+
+### Fixed
+
+* **ble:** attempt bonding and name failed CCCD subscribe for Beurer BF720 ([#168](https://github.com/KristianP26/ble-scale-sync/issues/168)) ([45bfd87](https://github.com/KristianP26/ble-scale-sync/commit/45bfd87cf51de6ec565d6fdcd7038f5da197d31e))
+* **ble:** match QN scales advertising AE00 alongside fff0 ([#235](https://github.com/KristianP26/ble-scale-sync/issues/235)) ([6a12687](https://github.com/KristianP26/ble-scale-sync/commit/6a126877120b106ff1a9d452e46eb146477c3160))
+* **firmware:** ease GATT connect on no-PSRAM ESP32 + heap diagnostic ([#139](https://github.com/KristianP26/ble-scale-sync/issues/139)) ([7bef0f6](https://github.com/KristianP26/ble-scale-sync/commit/7bef0f6866a3e1700eff607d1adbe18dea0cf00e))
+
 ## [1.16.1](https://github.com/KristianP26/ble-scale-sync/compare/v1.16.0...v1.16.1) (2026-06-15)
 
 
