@@ -24,6 +24,13 @@ SCAN_DURATION_MS = 5000
 # in ble_bridge.py drops entries past this cap without crashing.
 MAX_SCAN_ENTRIES = 80
 
+# GATT connect tuning (#139). No PSRAM, so the IDF heap is tight for a NimBLE
+# central connection: use a shorter connect/scan window and retry (with a GC
+# between attempts) instead of one long window that holds the shared radio.
+CONNECT_TIMEOUT_MS = 10000
+CONNECT_SCAN_MS = 8000
+CONNECT_RETRIES = 2
+
 AGGRESSIVE_GC = True
 GC_INTERVAL = 200
 

@@ -17,6 +17,13 @@ SCAN_DURATION_MS = 8000
 # Memory-constrained: cap raw IRQ results
 MAX_SCAN_ENTRIES = 200
 
+# GATT connect tuning (#139). No PSRAM: shorter connect/scan window + retries
+# (with a GC between) to ease IDF-heap and shared-radio pressure during a NimBLE
+# central connection.
+CONNECT_TIMEOUT_MS = 10000
+CONNECT_SCAN_MS = 8000
+CONNECT_RETRIES = 2
+
 # Aggressive GC to avoid OOM (~100 KB free after imports)
 AGGRESSIVE_GC = True
 GC_INTERVAL = 200  # main-loop iterations between gc.collect()

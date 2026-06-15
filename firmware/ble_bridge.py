@@ -15,6 +15,27 @@ _ble = bluetooth.BLE()
 _BT_BASE_SUFFIX = "00001000800000805f9b34fb"
 
 
+def _log_idf_heap(when):
+    """Log ESP-IDF heap headroom (best-effort, no-op off-device).
+
+    NimBLE allocates its connection structures from the ESP-IDF heap, which is
+    separate from the MicroPython GC heap. On a no-PSRAM classic ESP32 this heap
+    can be exhausted by WiFi + MQTT, so a GATT connect fails to allocate and
+    NimBLE aborts with a C-level semaphore assertion (#139). Logging free + the
+    largest contiguous block right before connect tells a RAM ceiling (tiny
+    `largest`) apart from a radio-coexistence timeout (healthy `largest`).
+    """
+    try:
+        import esp32
+
+        regions = esp32.idf_heap_info(esp32.HEAP_DATA)
+        free = sum(r[1] for r in regions)
+        largest = max(r[2] for r in regions)
+        print("IDF heap %s: free=%d largest=%d" % (when, free, largest))
+    except Exception:
+        pass
+
+
 def _norm_uuid(uuid):
     """Convert MicroPython UUID to normalized 32-char hex (matches Node.js normalizeUuid)."""
     s = str(uuid)
@@ -334,16 +355,43 @@ class BleBridge:
         aioble_addr_type = aioble.ADDR_RANDOM if (addr_type & 1) else aioble.ADDR_PUBLIC
         device = aioble.Device(aioble_addr_type, addr_bytes)
 
-        # aioble forwards scan_duration_ms=None to gap_connect, which defaults
-        # to a 2 s scan window. Scales advertising in short bursts (Eufy P2
-        # Pro) routinely miss that window, leaving the outer 15 s timeout to
-        # raise TimeoutError. Match scan_duration_ms to timeout_ms so NimBLE
-        # keeps scanning across the full connect window.
-        try:
-            self._conn = await device.connect(timeout_ms=15000, scan_duration_ms=15000)
-        except Exception as e:
-            print(f"GATT connect failed for {address}: {type(e).__name__}: {e}")
-            raise
+        # Reclaim heap before connecting. NimBLE allocates its connection from
+        # the ESP-IDF heap, and an empty MicroPython split is returned to that
+        # heap during a GC pass (MICROPY_GC_SPLIT_HEAP_AUTO), so collecting after
+        # the scan buffers are freed gives NimBLE the best chance to allocate on
+        # a tight no-PSRAM board (#139). Two passes: the second can release a
+        # split that the first only emptied.
+        import gc
+
+        gc.collect()
+        gc.collect()
+        _log_idf_heap("before connect")
+
+        # aioble forwards scan_duration_ms to gap_connect (default 2 s). Scales
+        # advertising in short bursts (Eufy P2 Pro) miss that window, so match it
+        # to the connect timeout. Both are board-tunable: roomy boards keep the
+        # 15 s window, no-PSRAM boards use a shorter window + retries (with a GC
+        # between) to ease radio/heap pressure (#139).
+        timeout_ms = getattr(board, "CONNECT_TIMEOUT_MS", 15000)
+        scan_ms = getattr(board, "CONNECT_SCAN_MS", 15000)
+        retries = getattr(board, "CONNECT_RETRIES", 1)
+        last_exc = None
+        for attempt in range(1, retries + 1):
+            try:
+                self._conn = await device.connect(timeout_ms=timeout_ms, scan_duration_ms=scan_ms)
+                last_exc = None
+                break
+            except Exception as e:
+                last_exc = e
+                print(
+                    "GATT connect attempt %d/%d failed for %s: %s: %s"
+                    % (attempt, retries, address, type(e).__name__, e)
+                )
+                if attempt < retries:
+                    gc.collect()
+                    await asyncio.sleep_ms(500)
+        if last_exc is not None:
+            raise last_exc
         self._chars = {}
         chars_info = []
 

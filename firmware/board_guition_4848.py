@@ -9,7 +9,8 @@ Pin mapping from https://homeding.github.io/boards/esp32s3/panel-4848S040.htm
 
 BOARD_NAME = "guition_4848"
 
-# BLE/WiFi coexistence — hardware coexistence, no deactivation needed
+# BLE/WiFi coexistence — shared radio (time-division), but ample PSRAM, so no
+# deactivation needed
 DEACTIVATE_BLE_AFTER_SCAN = False
 CONTINUOUS_SCAN = True
 PUBLISH_INTERVAL_MS = 2000   # drain+publish every 2s
@@ -21,6 +22,11 @@ SCAN_DURATION_MS = 8000
 
 # Large PSRAM
 MAX_SCAN_ENTRIES = 500
+
+# GATT connect tuning (#139). Ample PSRAM, so keep one long connect/scan window.
+CONNECT_TIMEOUT_MS = 15000
+CONNECT_SCAN_MS = 15000
+CONNECT_RETRIES = 1
 
 # No memory pressure
 AGGRESSIVE_GC = False

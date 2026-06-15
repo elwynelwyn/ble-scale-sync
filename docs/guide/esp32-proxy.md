@@ -59,6 +59,10 @@ Any ESP32 board running MicroPython with BLE support works. Tested on:
 
 The board is auto-detected from the chip family. Set `"board"` in `config.json` to override (e.g. `"esp_wroom_32"` for a generic WROOM-32 module, `"guition_4848"` for the display board, `"atom_echo"` for the Atom Echo). Auto-detect cannot distinguish a WROOM-32 from an Atom Echo, so WROOM-32 users must set the override (or pass `--board esp_wroom_32` to `flash.sh`).
 
+::: tip Broadcast vs GATT scales and RAM
+Broadcast-only scales (the reading is in the advertisement) work on every board listed above. GATT-connect scales, which need an active connection (e.g. QN Scale / Renpho ES-CS20M, Yunmai, Inlife, some Eufy), are RAM-heavy: the BLE stack allocates the connection from the ESP-IDF heap, which is separate from the MicroPython heap. On a no-PSRAM board (classic ESP-WROOM-32, Atom Echo) that heap can run out while WiFi and MQTT are active, so the connect times out or the board reboots. For GATT-connect scales use a board with PSRAM (ESP32-S3-DevKitC, Guition). Both classic ESP32 and S3 share one 2.4 GHz radio via time-division coexistence; the S3 advantage here is RAM, not the radio.
+:::
+
 ![Guition 4848 display showing scan status and user results](../images/esp32-display.png)
 
 ::: warning Not compatible
@@ -364,7 +368,7 @@ On shared-radio boards (ESP32-PICO), the firmware deactivates BLE after each sca
 - Check that your WiFi router is on a 2.4 GHz band (5 GHz won't work with ESP32)
 - Try reducing `SCAN_DURATION_MS` in the board config
 
-ESP32-S3 boards have hardware radio coexistence and don't need BLE deactivation.
+ESP32-S3 boards have enough RAM (PSRAM) to keep BLE active alongside WiFi, so they don't deactivate BLE after a scan. The radio is still shared on both chips (time-division coexistence); the difference is available memory.
 
 ### Scan timeout (30s) on first scan after boot
 
@@ -377,3 +381,18 @@ Boards without PSRAM have ~100 KB free after boot. If you see `MemoryError`:
 - The firmware already deduplicates scan results and runs `gc.collect()` aggressively
 - Reduce `SCAN_DURATION_MS` in `board_atom_echo.py` to find fewer devices
 - Avoid running other MicroPython code alongside the bridge
+
+### GATT connect times out or the ESP32 reboots (classic ESP32 / no PSRAM)
+
+A GATT-connect scale (one that needs an active connection, not just a broadcast) can make a no-PSRAM board time out on connect, or crash and reboot with a NimBLE error like `assertion:semaphor->handle / npl_freertos_sem_init` (Guru Meditation). The cause is the ESP-IDF heap running out: the BLE stack allocates the connection from that heap (separate from the MicroPython heap), and WiFi + MQTT leave little room on a classic ESP32 / Atom Echo. The crash is a C-level assertion inside the BLE stack, so it cannot be caught from Python; it can only be avoided by leaving enough free heap.
+
+The firmware mitigates this by freeing memory right before connecting and, on no-PSRAM boards, using a shorter connect window with a retry. It also prints the heap headroom over serial just before each connect:
+
+```
+IDF heap before connect: free=<bytes> largest=<bytes>
+```
+
+- A very small `largest` before a failed connect means you are out of RAM. Use a board with PSRAM (ESP32-S3-DevKitC, Guition) for GATT-connect scales.
+- A healthy `largest` plus a timeout points at radio contention instead; move the board closer to the scale and retry.
+
+Broadcast-only scales are unaffected and work on every board.
