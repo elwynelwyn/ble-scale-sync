@@ -93,6 +93,12 @@ finally:
     if not _config_existed:
         os.remove(_config_path)
 
+# main._wait_not_busy awaits asyncio.sleep_ms, which only exists in MicroPython.
+import asyncio as _asyncio
+
+if not hasattr(_asyncio, "sleep_ms"):
+    _asyncio.sleep_ms = lambda ms: _asyncio.sleep(ms / 1000)
+
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -175,6 +181,35 @@ class TestAutoConnectConfig(unittest.TestCase):
         data = {"scales": [], "autoConnect": False}
         main._auto_connect = data.get("autoConnect", True)
         self.assertFalse(main._auto_connect)
+
+
+class TestWaitNotBusy(unittest.IsolatedAsyncioTestCase):
+    """_wait_not_busy: serialize host connect against an in-flight BLE op (#231)."""
+
+    async def test_returns_true_when_free(self):
+        main._busy = False
+        self.assertTrue(await main._wait_not_busy(max_iters=3, sleep_ms=1))
+
+    async def test_returns_false_when_stays_busy(self):
+        main._busy = True
+        try:
+            self.assertFalse(await main._wait_not_busy(max_iters=2, sleep_ms=1))
+        finally:
+            main._busy = False
+
+    async def test_returns_true_when_busy_clears(self):
+        main._busy = True
+
+        async def _clear():
+            await _asyncio.sleep(0.002)
+            main._busy = False
+
+        task = _asyncio.ensure_future(_clear())
+        try:
+            self.assertTrue(await main._wait_not_busy(max_iters=50, sleep_ms=1))
+        finally:
+            main._busy = False
+            await task
 
 
 if __name__ == "__main__":

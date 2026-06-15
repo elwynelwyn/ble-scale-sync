@@ -315,5 +315,46 @@ class TestRawHasMac(unittest.TestCase):
         self.assertFalse(ble_bridge._raw_has_mac([self._raw(_MAC)], {_MAC_STR.lower()}))
 
 
+class TestUnpackScanResult(unittest.TestCase):
+    """_unpack_scan_result: keep real addr_type, drop adv_type (#231)."""
+
+    def test_preserves_random_addr_type(self):
+        # IRQ event data order: (addr_type, addr, adv_type, rssi, adv_data).
+        data = (1, _MAC, 0, -55, b"\x02\x01\x06")
+        addr_type, addr, rssi, adv_data = ble_bridge._unpack_scan_result(data)
+        self.assertEqual(addr_type, 1)
+        self.assertEqual(bytes(addr), _MAC)
+        self.assertEqual(rssi, -55)
+        self.assertEqual(bytes(adv_data), b"\x02\x01\x06")
+
+    def test_preserves_public_addr_type(self):
+        data = (0, _MAC, 0, -40, b"")
+        addr_type, _addr, _rssi, _adv = ble_bridge._unpack_scan_result(data)
+        self.assertEqual(addr_type, 0)
+
+    def test_addr_type_not_taken_from_adv_type(self):
+        # Regression: random address (addr_type=1) advertising ADV_IND
+        # (adv_type=0). The old unpack stored adv_type as addr_type, yielding 0
+        # (public) and a connect timeout for random-address scales (#231).
+        data = (1, _MAC, 0, -50, b"")
+        addr_type, _addr, _rssi, _adv = ble_bridge._unpack_scan_result(data)
+        self.assertEqual(addr_type, 1)
+
+
+class TestAddrTypeProbeOrder(unittest.TestCase):
+    """_addr_type_probe_order: advertised type first, opposite as fallback (#231)."""
+
+    def test_public_then_random(self):
+        self.assertEqual(ble_bridge._addr_type_probe_order(0), (0, 1))
+
+    def test_random_then_public(self):
+        self.assertEqual(ble_bridge._addr_type_probe_order(1), (1, 0))
+
+    def test_masks_to_low_bit(self):
+        # addr_type may carry higher bits; only bit 0 selects public/random.
+        self.assertEqual(ble_bridge._addr_type_probe_order(2), (0, 1))
+        self.assertEqual(ble_bridge._addr_type_probe_order(3), (1, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

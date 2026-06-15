@@ -143,6 +143,18 @@ def describe_exc(e):
     print(f"Error: {message}")
 
 
+async def _wait_not_busy(max_iters=60, sleep_ms=500):
+    """Wait up to max_iters*sleep_ms for an in-flight BLE op to clear (#231).
+
+    Returns True if _busy is clear (free to proceed), False if it stayed set.
+    """
+    for _ in range(max_iters):
+        if not _busy:
+            return True
+        await asyncio.sleep_ms(sleep_ms)
+    return not _busy
+
+
 # ─── Autonomous scan loop ────────────────────────────────────────────────────
 
 def _check_scale_beep(results):
@@ -389,18 +401,17 @@ async def handle_connect(payload):
     global _char_subscribed, _busy, _scan_paused
     _scan_paused = True  # Pause autonomous scanning
 
+    # Serialize against an in-flight BLE op. On continuous boards the autonomous
+    # connect path (#201) holds _busy while it runs; without this wait a
+    # host-initiated fallback connect (#231) re-enters aioble on the same bridge
+    # concurrently, which can abort the connect mid-flight.
+    if not await _wait_not_busy():
+        _scan_paused = False
+        await publish_error("Busy: another BLE operation is in progress")
+        return
+
     if board.CONTINUOUS_SCAN:
         bridge.stop_streaming()
-    else:
-        # Wait for any in-progress batch scan to finish (max 30s)
-        for _ in range(60):
-            if not _busy:
-                break
-            await asyncio.sleep_ms(500)
-        if _busy:
-            _scan_paused = False
-            await publish_error("Busy — another BLE operation is in progress")
-            return
 
     _busy = True
     try:
@@ -582,6 +593,9 @@ async def main():
                     if "/response" not in suffix:
                         await handle_read(suffix)
             except Exception as e:
+                import sys
+
+                sys.print_exception(e)
                 await publish_error(describe_exc(e))
 
         await asyncio.sleep_ms(50)

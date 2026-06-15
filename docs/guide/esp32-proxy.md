@@ -400,3 +400,7 @@ Broadcast-only scales are unaffected and work on every board.
 ### A GATT-only scale never connects with auto_connect
 
 Some scales (for example the QN-Scale) expose no broadcast data and must be GATT-connected to read. With `auto_connect` on, the ESP32 connects itself the instant it sees a known scale MAC, but it only treats a MAC as known once the server has told it about that MAC. Set `ble.scale_mac` to your scale so the server seeds that MAC to the ESP32 at startup and the autonomous connect can fire on the first sighting. Without a `scale_mac`, the server still recovers by falling back to a slower host-initiated connect after a few scan cycles, so a configured `scale_mac` is recommended for GATT-only scales.
+
+### A random-address scale times out on connect
+
+Some scales advertise a random Bluetooth address (the first MAC byte is `C0` or higher, for example `FF:03:..`) rather than a fixed public one. The proxy now reads the advertised address type correctly and connects with it, and if a connect still times out it retries once with the opposite address type. If your scale used to log `GATT connect attempt ... failed ... TimeoutError` on every weigh-in, update the firmware and try again.
