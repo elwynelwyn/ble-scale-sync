@@ -316,8 +316,40 @@ export function waitForRawReading(
     const history: ScaleReading[] = [];
     let historyCapWarned = false;
 
+    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    let heldReading: ScaleReading | null = null;
+    const clearHold = (): void => {
+      if (holdTimer) {
+        clearTimeout(holdTimer);
+        holdTimer = null;
+      }
+    };
+
+    const ackWriteChar =
+      resolveChar(charMap, adapter.charWriteUuid) ??
+      (adapter.altCharWriteUuid ? resolveChar(charMap, adapter.altCharWriteUuid) : undefined);
+
+    const finishWith = (r: ScaleReading): void => {
+      resolved = true;
+      clearHold();
+      init.cleanup();
+      process.stdout.write('\r' + ' '.repeat(80) + '\r');
+      bleLog.info(`Reading complete: ${r.weight.toFixed(2)} kg / ${r.impedance} Ohm`);
+      resolve({ reading: r, adapter, history: history.length > 0 ? history.slice() : undefined });
+    };
+
     const handleNotification = (sourceUuid: string, data: Buffer): void => {
       if (resolved) return;
+
+      if (adapter.buildAck && ackWriteChar) {
+        const ack = adapter.buildAck(data);
+        if (ack) {
+          const ackBuf = Buffer.isBuffer(ack) ? ack : Buffer.from(ack);
+          void ackWriteChar.write(ackBuf, true).catch((e: unknown) => {
+            if (!resolved) bleLog.debug(`ACK write error: ${errMsg(e)}`);
+          });
+        }
+      }
 
       const reading: ScaleReading | null = adapter.parseCharNotification
         ? adapter.parseCharNotification(sourceUuid, data)
@@ -351,15 +383,24 @@ export function waitForRawReading(
       }
 
       if (adapter.isComplete(reading)) {
-        resolved = true;
-        init.cleanup();
-        process.stdout.write('\r' + ' '.repeat(80) + '\r');
-        bleLog.info(`Reading complete: ${reading.weight.toFixed(2)} kg / ${reading.impedance} Ohm`);
-        resolve({
-          reading,
-          adapter,
-          history: history.length > 0 ? history.slice() : undefined,
-        });
+        const final = adapter.isFinal ? adapter.isFinal(reading) : true;
+        if (adapter.completionHoldMs && !final) {
+          heldReading = reading;
+          if (!holdTimer) {
+            bleLog.info(
+              `Weight stable; holding connection up to ` +
+                `${Math.round(adapter.completionHoldMs / 1000)}s for body composition...`,
+            );
+            holdTimer = setTimeout(() => {
+              if (resolved) return;
+              const r = heldReading;
+              if (!r) return;
+              finishWith(r);
+            }, adapter.completionHoldMs);
+          }
+          return;
+        }
+        finishWith(reading);
       }
     };
 
@@ -377,6 +418,7 @@ export function waitForRawReading(
 
     bleDevice.onDisconnect(() => {
       if (resolved) return;
+      clearHold();
       if (history.length > 0) {
         resolved = true;
         init.cleanup();
@@ -391,6 +433,10 @@ export function waitForRawReading(
           adapter,
           history: history.length > 0 ? history.slice() : undefined,
         });
+        return;
+      }
+      if (heldReading) {
+        finishWith(heldReading);
         return;
       }
       init.cleanup();

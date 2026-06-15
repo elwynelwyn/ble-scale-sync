@@ -200,6 +200,87 @@ describe('BeurerSanitasScaleAdapter', () => {
     });
   });
 
+  describe('SBF70 / BF710 0x59 composition stream (issue #211)', () => {
+    function sbf70Adapter() {
+      const adapter = makeAdapter();
+      adapter.matches(mockPeripheral('SANITAS SBF70'));
+      return adapter;
+    }
+
+    // Real frames captured from the official-app HCI snoop in issue #211.
+    const PART1 = Buffer.from([
+      0xe7, 0x59, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65,
+    ]);
+    const PART2 = Buffer.from([
+      0xe7, 0x59, 0x03, 0x02, 0x6a, 0x21, 0xf4, 0xc6, 0x06, 0x87, 0x01, 0xb5, 0x00, 0xdf, 0x02,
+    ]);
+    const PART3 = Buffer.from([
+      0xe7, 0x59, 0x03, 0x03, 0x09, 0x01, 0x8d, 0x00, 0xe9, 0x07, 0x17, 0x0a, 0xa2, 0x01, 0x08,
+    ]);
+
+    it('builds the per-frame ACK echoing bytes [1..3]', () => {
+      const adapter = sbf70Adapter();
+      expect(adapter.buildAck!(Buffer.from([0xe7, 0x58, 0x01, 0x06, 0x86]))).toEqual([
+        0xe7, 0xf1, 0x58, 0x01, 0x06,
+      ]);
+      expect(adapter.buildAck!(PART3)).toEqual([0xe7, 0xf1, 0x59, 0x03, 0x03]);
+    });
+
+    it('does not ACK non-0xE7 frames', () => {
+      const adapter = sbf70Adapter();
+      expect(adapter.buildAck!(Buffer.from([0xf7, 0x58, 0x01, 0x08, 0x5e]))).toBeNull();
+      expect(adapter.buildAck!(Buffer.from([0xe7]))).toBeNull();
+    });
+
+    it('returns null for part 1 and intermediate parts, reading on the last part', () => {
+      const adapter = sbf70Adapter();
+      expect(adapter.parseNotification(PART1)).toBeNull();
+      expect(adapter.parseNotification(PART2)).toBeNull();
+      const reading = adapter.parseNotification(PART3);
+      expect(reading).not.toBeNull();
+      expect(reading!.weight).toBeCloseTo(83.55, 2);
+      expect(reading!.impedance).toBe(437);
+    });
+
+    it('exposes the decoded composition through computeMetrics', () => {
+      const adapter = sbf70Adapter();
+      adapter.parseNotification(PART1);
+      adapter.parseNotification(PART2);
+      const reading = adapter.parseNotification(PART3)!;
+      const payload = adapter.computeMetrics(reading, defaultProfile());
+      expect(payload.bodyFatPercent).toBeCloseTo(22.3, 1);
+      expect(payload.waterPercent).toBeCloseTo(52.1, 1);
+      assertPayloadRanges(payload);
+    });
+
+    it('isFinal is true for a composition reading, false for weight-only', () => {
+      const adapter = sbf70Adapter();
+      expect(adapter.isFinal!({ weight: 83.55, impedance: 437 })).toBe(true);
+      expect(adapter.isFinal!({ weight: 83.45, impedance: 0 })).toBe(false);
+    });
+
+    it('completionHoldMs is set for BF710 type and unset for BF700/800', () => {
+      const sbf70 = sbf70Adapter();
+      expect(sbf70.completionHoldMs).toBeGreaterThan(0);
+      const bf700 = makeAdapter();
+      bf700.matches(mockPeripheral('bf-700'));
+      expect(bf700.completionHoldMs).toBeUndefined();
+    });
+
+    it('treats an all-zero composition (unregistered) as weight-only', () => {
+      const adapter = sbf70Adapter();
+      const z2 = Buffer.from([
+        0xe7, 0x59, 0x03, 0x02, 0x6a, 0x21, 0xf4, 0xc6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      ]);
+      const z3 = Buffer.from([
+        0xe7, 0x59, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      ]);
+      expect(adapter.parseNotification(PART1)).toBeNull();
+      expect(adapter.parseNotification(z2)).toBeNull();
+      expect(adapter.parseNotification(z3)).toBeNull();
+    });
+  });
+
   describe('computeMetrics()', () => {
     it('returns payload with cached body comp from full frame', () => {
       const adapter = makeAdapter();

@@ -846,6 +846,137 @@ describe('waitForRawReading() history collection', () => {
   });
 });
 
+// ─── per-frame ACK + completion hold ────────────────────────────────────────
+
+describe('waitForRawReading() — per-frame ACK + completion hold', () => {
+  it('writes the buildAck result back for every notify frame', async () => {
+    const notifyChar = createMockChar();
+    const writeChar = createMockChar();
+    const device = createMockDevice();
+    const { charMap } = createCharMap([
+      [NOTIFY_UUID, notifyChar],
+      [WRITE_UUID, writeChar],
+    ]);
+
+    const adapter = createLegacyAdapter({
+      buildAck: vi.fn((data: Buffer) => [0xe7, 0xf1, data[1]]),
+      parseNotification: vi.fn((data: Buffer) =>
+        data[0] === 0x99 ? { weight: 75, impedance: 500 } : null,
+      ),
+    });
+
+    const promise = waitForRawReading(charMap, device, adapter, PROFILE, '');
+    await vi.waitFor(() => expect(notifyChar.subscribeCalled).toBe(true));
+
+    // A frame that parseNotification drops must still be ACKed.
+    notifyChar.triggerData(Buffer.from([0xe7, 0x59, 0x03]));
+    await vi.waitFor(() =>
+      expect(writeChar.writtenData.some((b) => b.equals(Buffer.from([0xe7, 0xf1, 0x59])))).toBe(
+        true,
+      ),
+    );
+
+    notifyChar.triggerData(Buffer.from([0x99]));
+    await promise;
+  });
+
+  it('holds the link open on a non-final complete reading, resolves on the later final one', async () => {
+    const notifyChar = createMockChar();
+    const writeChar = createMockChar();
+    const device = createMockDevice();
+    const { charMap } = createCharMap([
+      [NOTIFY_UUID, notifyChar],
+      [WRITE_UUID, writeChar],
+    ]);
+
+    const adapter = createLegacyAdapter({
+      completionHoldMs: 15000,
+      isComplete: vi.fn((r: ScaleReading) => r.weight > 0),
+      isFinal: vi.fn((r: ScaleReading) => r.impedance > 0),
+      parseNotification: vi.fn((data: Buffer) =>
+        data[0] === 0x02 ? { weight: 83.55, impedance: 437 } : { weight: 83.4, impedance: 0 },
+      ),
+    });
+
+    const promise = waitForRawReading(charMap, device, adapter, PROFILE, '');
+    await vi.waitFor(() => expect(notifyChar.subscribeCalled).toBe(true));
+
+    // Weight-only complete reading: must NOT resolve yet (link held).
+    notifyChar.triggerData(Buffer.from([0x01]));
+    const pending = await Promise.race([
+      promise.then(() => 'resolved'),
+      new Promise((r) => setTimeout(() => r('pending'), 50)),
+    ]);
+    expect(pending).toBe('pending');
+
+    // Composition (final) reading: resolves immediately with impedance.
+    notifyChar.triggerData(Buffer.from([0x02]));
+    const result = await promise;
+    expect(result.reading).toEqual({ weight: 83.55, impedance: 437 });
+  });
+
+  it('resolves with the last weight-only reading when the hold window elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyChar = createMockChar();
+      const writeChar = createMockChar();
+      const device = createMockDevice();
+      const { charMap } = createCharMap([
+        [NOTIFY_UUID, notifyChar],
+        [WRITE_UUID, writeChar],
+      ]);
+
+      const adapter = createLegacyAdapter({
+        completionHoldMs: 15000,
+        isComplete: vi.fn((r: ScaleReading) => r.weight > 0),
+        isFinal: vi.fn((r: ScaleReading) => r.impedance > 0),
+        parseNotification: vi.fn(() => ({ weight: 83.4, impedance: 0 })),
+      });
+
+      const promise = waitForRawReading(charMap, device, adapter, PROFILE, '');
+      // Flush the fire-and-forget subscribe microtask under fake timers
+      // (vi.waitFor would not advance the faked clock — known footgun; the
+      // documented fix is advanceTimersByTimeAsync, which flushes async timers).
+      await vi.advanceTimersByTimeAsync(1);
+      expect(notifyChar.subscribeCalled).toBe(true);
+
+      notifyChar.triggerData(Buffer.from([0x01]));
+      await vi.advanceTimersByTimeAsync(15000);
+
+      const result = await promise;
+      expect(result.reading).toEqual({ weight: 83.4, impedance: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolves with the held reading (not reject) on disconnect during the hold', async () => {
+    const notifyChar = createMockChar();
+    const writeChar = createMockChar();
+    const device = createMockDevice();
+    const { charMap } = createCharMap([
+      [NOTIFY_UUID, notifyChar],
+      [WRITE_UUID, writeChar],
+    ]);
+
+    const adapter = createLegacyAdapter({
+      completionHoldMs: 15000,
+      isComplete: vi.fn((r: ScaleReading) => r.weight > 0),
+      isFinal: vi.fn((r: ScaleReading) => r.impedance > 0),
+      parseNotification: vi.fn(() => ({ weight: 83.4, impedance: 0 })),
+    });
+
+    const promise = waitForRawReading(charMap, device, adapter, PROFILE, '');
+    await vi.waitFor(() => expect(notifyChar.subscribeCalled).toBe(true));
+
+    notifyChar.triggerData(Buffer.from([0x01]));
+    device.triggerDisconnect();
+
+    const result = await promise;
+    expect(result.reading).toEqual({ weight: 83.4, impedance: 0 });
+  });
+});
+
 // ─── Weight normalization tests ─────────────────────────────────────────────
 
 describe('waitForReading() — weight normalization', () => {

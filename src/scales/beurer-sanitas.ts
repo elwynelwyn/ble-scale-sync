@@ -54,6 +54,9 @@ interface CachedComp {
  */
 const BF710_STABILITY_COUNT = 3;
 const BF710_STABILITY_TOLERANCE_KG = 0.3;
+// Snoop shows composition lands ~10-12 s after the weight first stabilizes;
+// 15 s leaves margin without holding an unregistered scale's link too long.
+const BF710_COMPOSITION_HOLD_MS = 15000;
 
 export class BeurerSanitasScaleAdapter implements ScaleAdapter {
   readonly name = 'Beurer / Sanitas';
@@ -70,6 +73,27 @@ export class BeurerSanitasScaleAdapter implements ScaleAdapter {
     return this.isBf710Type ? [0xe7, 0x01] : [0xf7, 0x01];
   }
   private cachedComp: CachedComp | null = null;
+
+  /** Accumulated 0x59 composition parts (part number -> payload after byte 4). */
+  private compParts = new Map<number, Buffer>();
+
+  /** Per-frame ACK echoing bytes [1..3]; BF710/SBF70 gate the 0x59 stream on it. */
+  buildAck(data: Buffer): number[] | null {
+    if (data.length >= 4 && data[0] === 0xe7) {
+      return [0xe7, 0xf1, data[1], data[2], data[3]];
+    }
+    return null;
+  }
+
+  /** Hold the link for the bioimpedance step only on the BF710/SBF70 variant. */
+  get completionHoldMs(): number | undefined {
+    return this.isBf710Type ? BF710_COMPOSITION_HOLD_MS : undefined;
+  }
+
+  /** A reading carrying impedance is the final composition reading. */
+  isFinal(reading: ScaleReading): boolean {
+    return reading.impedance > 0;
+  }
 
   matches(device: BleDeviceInfo): boolean {
     const name = (device.localName || '').toLowerCase();
@@ -103,10 +127,10 @@ export class BeurerSanitasScaleAdapter implements ScaleAdapter {
    *   [2]     flag (0x01 = user on scale, 0x00 = off)
    *   [3-4]   weight (BE uint16, * 50 / 1000)
    *
-   * BF710/SBF70/SBF75 finalize frame (command 0x59) carries composition only
-   * when the user is registered on the device via the manufacturer app.
-   * For unregistered users all composition bytes are zero, so we ignore it
-   * and rely on the stability window over 0x58 frames.
+   * BF710/SBF70/SBF75 finalize frame (command 0x59) streams body composition
+   * in multiple parts (see parseBf710Composition). The scale only advances the
+   * stream when each frame is acknowledged (buildAck); an all-zero composition
+   * (unregistered user) falls back to the weight-only stability window.
    */
   parseNotification(data: Buffer): ScaleReading | null {
     if (this.isBf710Type) {
@@ -152,11 +176,71 @@ export class BeurerSanitasScaleAdapter implements ScaleAdapter {
       return { weight, impedance: 0 };
     }
 
+    if (cmd === 0x59 && data.length >= 4) {
+      return this.parseBf710Composition(data);
+    }
+
     return null;
+  }
+
+  /**
+   * Reassemble the multipart 0x59 composition stream.
+   *
+   * Frame: [0]=0xE7 [1]=0x59 [2]=count [3]=part [4..]=payload. Part 1 is the
+   * user-identification frame (no measurement) so it is skipped. Parts 2..count
+   * carry the payload; concatenated they form the same 16-byte big-endian
+   * layout as the BF700/800 composition frame (weight@4, impedance@6, fat@8,
+   * water@10, muscle@12, bone@14). The scale only advances this stream when each
+   * frame is acknowledged (see buildAck); otherwise it stops after part 1. An
+   * all-zero composition means an unregistered user, so it is treated as
+   * weight-only.
+   */
+  private parseBf710Composition(data: Buffer): ScaleReading | null {
+    const count = data[2];
+    const part = data[3];
+
+    if (part <= 1) {
+      this.compParts.clear();
+      return null;
+    }
+
+    this.compParts.set(part, Buffer.from(data.subarray(4)));
+    if (part < count) return null;
+
+    const ordered: Buffer[] = [];
+    for (let p = 2; p <= count; p++) {
+      const chunk = this.compParts.get(p);
+      if (!chunk) {
+        this.compParts.clear();
+        return null;
+      }
+      ordered.push(chunk);
+    }
+    this.compParts.clear();
+
+    const merged = Buffer.concat(ordered);
+    if (merged.length < 16) return null;
+
+    const weight = (merged.readUInt16BE(4) * 50) / 1000;
+    const impedance = merged.readUInt16BE(6);
+    const fat = merged.readUInt16BE(8) / 10;
+    const water = merged.readUInt16BE(10) / 10;
+    const muscle = merged.readUInt16BE(12) / 10;
+    const bone = (merged.readUInt16BE(14) * 50) / 1000;
+
+    if (impedance === 0 && fat === 0 && water === 0 && muscle === 0) {
+      this.cachedComp = null;
+      return null;
+    }
+    if (weight <= 0 || weight > 300 || !Number.isFinite(weight)) return null;
+
+    this.cachedComp = { fat, water, muscle, bone };
+    return { weight, impedance };
   }
 
   isComplete(reading: ScaleReading): boolean {
     if (this.isBf710Type) {
+      if (reading.impedance > 0) return true;
       if (this.readingBuffer.length < BF710_STABILITY_COUNT) return false;
       const min = Math.min(...this.readingBuffer);
       const max = Math.max(...this.readingBuffer);

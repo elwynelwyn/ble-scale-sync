@@ -174,6 +174,33 @@ export interface ScaleAdapter {
    */
   parseServiceData?(uuid: string, data: Buffer): ScaleReading | null;
 
+  /**
+   * Build an immediate per-frame acknowledgement to write back to the write
+   * characteristic after each notification. Some protocols gate multipart
+   * streaming behind a per-frame echo (e.g. Beurer/Sanitas 0x59 composition).
+   * The handler resolves the write char once and fires this write-and-forget
+   * for every notify frame, including frames that `parseNotification` drops.
+   * Return null to write nothing.
+   */
+  buildAck?(data: Buffer): Buffer | number[] | null;
+
+  /**
+   * When set, after `isComplete()` first returns true for a non-final reading
+   * the handler keeps the GATT link open for up to this many milliseconds,
+   * still feeding frames to the adapter, so a richer reading (e.g. bioimpedance
+   * composition that the scale only sends a few seconds after the weight
+   * settles) can arrive. On timeout the last complete reading resolves. Leave
+   * unset for adapters that resolve immediately on a complete reading.
+   */
+  readonly completionHoldMs?: number;
+
+  /**
+   * Only consulted while `completionHoldMs` is set. Return true when the reading
+   * is the rich/final one (e.g. carries composition) so the handler resolves
+   * immediately instead of waiting out the hold window.
+   */
+  isFinal?(reading: ScaleReading): boolean;
+
   matches(device: BleDeviceInfo): boolean;
   parseNotification(data: Buffer): ScaleReading | null;
   isComplete(reading: ScaleReading): boolean;
