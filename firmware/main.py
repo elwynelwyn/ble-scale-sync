@@ -177,10 +177,18 @@ def _find_scale_in_raw(raw_results):
 
     Returns (mac, addr_bytes, addr_type) or None. Non-destructive peek used by the
     autonomous connect logic to skip the MQTT round-trip (#201).
+
+    Some NimBLE / ESP-IDF builds misreport a static random scale as public in the
+    scan IRQ. A static random address is unambiguous from its top two bits
+    (addr[0] & 0xC0 == 0xC0), so trust the bits over the reported type: connecting
+    with the wrong addr_type only ever surfaces as a connect TimeoutError because
+    aioble gap_connect matches on addr AND addr_type (#231).
     """
     for addr_bytes, addr_type, _rssi, _raw in raw_results:
         mac = ":".join("%02X" % b for b in addr_bytes)
         if mac in _scale_macs:
+            if (addr_bytes[0] & 0xC0) == 0xC0:
+                addr_type = 1
             print(f"Auto-connect: found known scale {mac} in raw buffer (addr_type={addr_type})")
             return mac, addr_bytes, addr_type
     return None
