@@ -35,6 +35,12 @@ function makeCtx(over: Partial<ConnectionContext> = {}): ConnectionContext {
 }
 
 describe('BeurerBf720Adapter', () => {
+  // #168: the SIG User Data Service protects its CCCDs, so the node-ble handler
+  // must attempt a bond before subscribing. The flag drives that path.
+  it('requires bonding', () => {
+    expect(makeAdapter().requiresBonding).toBe(true);
+  });
+
   describe('matches()', () => {
     it.each(['BF720', 'beurer bf105', 'My BF720 Scale'])('matches name "%s"', (name) => {
       expect(makeAdapter().matches(mockPeripheral(name))).toBe(true);

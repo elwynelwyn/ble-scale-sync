@@ -45,6 +45,37 @@ import { broadcastScanNodeBle } from './broadcast.js';
 import { tagBleFailure, bleFailureKind } from '../failure-kind.js';
 import { probeLiveness, makeLivenessAdapter } from './liveness.js';
 
+/** Max time to wait for a BLE pairing/bonding handshake before giving up. */
+const BONDING_TIMEOUT_MS = 15_000;
+
+/**
+ * Best-effort BLE bonding for adapters that need an encrypted link (#168).
+ *
+ * Some SIG scales (e.g. Beurer BF720, whose User Data Service 0x181C protects
+ * its CCCDs) drop the link when notifications are enabled on an unbonded
+ * connection. Pairing here, after connect and before subscribing, establishes
+ * the encryption those characteristics require. A failure is logged and the
+ * read continues unbonded so adapters that do not strictly need it are not
+ * blocked; pairing may need a registered BlueZ agent on some setups.
+ */
+async function ensureBonded(device: Device): Promise<void> {
+  try {
+    const paired = (await device.isPaired()) as unknown as boolean;
+    if (paired) {
+      bleLog.debug('Device already bonded');
+      return;
+    }
+    bleLog.info('Adapter requires bonding; attempting BLE pairing...');
+    await withTimeout(device.pair(), BONDING_TIMEOUT_MS, 'BLE pairing timed out');
+    bleLog.info('BLE pairing succeeded');
+  } catch (err) {
+    bleLog.warn(
+      `BLE pairing failed (continuing unbonded): ${errMsg(err)}. ` +
+        'A BlueZ pairing agent may be required for scales that mandate an encrypted link.',
+    );
+  }
+}
+
 /**
  * Scan for a BLE scale, read weight + impedance, and compute body composition.
  * Uses node-ble (BlueZ D-Bus). Requires bluetoothd running on Linux.
@@ -301,6 +332,12 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
         'GATT service discovery timed out',
       );
     }
+    // Establish an encrypted link before enabling notifications for adapters
+    // whose SIG services protect their CCCDs (#168). Best-effort: see ensureBonded.
+    if (matchedAdapter.requiresBonding) {
+      await ensureBonded(device);
+    }
+
     const raw = await withTimeout(
       waitForRawReading(
         charMap,

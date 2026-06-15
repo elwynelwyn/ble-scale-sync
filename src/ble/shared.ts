@@ -218,9 +218,23 @@ async function subscribeAndInit(
         bleLog.debug(`Skipping optional notify binding ${binding.uuid} (not present on device)`);
         continue;
       }
-      const unsub = await subscribeToChar(charMap, binding.uuid, onNotification);
-      unsubscribers.push(unsub);
-      subscribed += 1;
+      bleLog.debug(`Subscribing to ${binding.uuid} (${binding.type})...`);
+      try {
+        const unsub = await subscribeToChar(charMap, binding.uuid, onNotification);
+        unsubscribers.push(unsub);
+        subscribed += 1;
+      } catch (err) {
+        // Name the exact characteristic that failed and surface the underlying
+        // BlueZ error. Enabling notifications/indications on a SIG service that
+        // mandates an encrypted link (e.g. Beurer BF720 User Data 0x181C) fails
+        // here when the device is not bonded, which otherwise looks like an
+        // opaque mid-handshake disconnect. #168
+        throw new Error(
+          `Failed to enable notifications on ${binding.uuid} (${binding.type}): ${errMsg(err)}. ` +
+            'The scale may require a bonded/encrypted link.',
+          { cause: err },
+        );
+      }
     }
     bleLog.info(`Subscribed to ${subscribed} notification(s). Step on the scale.`);
     await startInit();

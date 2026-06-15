@@ -139,6 +139,14 @@ export interface ScaleAdapter {
   readonly preferPassive?: boolean;
 
   /**
+   * True if this adapter's characteristics need a bonded/encrypted BLE link
+   * (e.g. the SIG User Data Service on the Beurer BF720). The node-ble handler
+   * attempts a best-effort BLE pairing after connect and before subscribing.
+   * Best-effort: a pairing failure is logged and the read proceeds unbonded.
+   */
+  readonly requiresBonding?: boolean;
+
+  /**
    * All characteristics this adapter needs (notify, write, read).
    * When defined, ble.ts subscribes to ALL 'notify' bindings and discovers all 'write'/'read' ones.
    * When absent, ble.ts falls back to the legacy charNotifyUuid + charWriteUuid pair.

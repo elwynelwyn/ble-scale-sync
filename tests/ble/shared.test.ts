@@ -576,6 +576,27 @@ describe('waitForReading() — multi-char mode (characteristics[])', () => {
       'No notify characteristics',
     );
   });
+
+  // #168: a CCCD enable that fails (e.g. unbonded BF720 SIG service) must surface
+  // the exact characteristic + underlying error, not an opaque disconnect.
+  it('names the characteristic when enabling notifications fails', async () => {
+    const failingChar = createMockChar();
+    failingChar.subscribe = vi.fn(async () => {
+      throw new Error('org.bluez.Error.NotAuthorized');
+    });
+    const device = createMockDevice();
+    const { charMap } = createCharMap([[NOTIFY_UUID, failingChar]]);
+
+    const adapter = createLegacyAdapter({
+      characteristics: [{ uuid: NOTIFY_UUID, type: 'notify' }],
+      onConnected: vi.fn(),
+    });
+
+    const promise = waitForReading(charMap, device, adapter, PROFILE, '');
+    await expect(promise).rejects.toThrow('Failed to enable notifications on');
+    await expect(promise).rejects.toThrow(NOTIFY_UUID);
+    await expect(promise).rejects.toThrow('org.bluez.Error.NotAuthorized');
+  });
 });
 
 // ─── waitForRawReading tests ────────────────────────────────────────────────

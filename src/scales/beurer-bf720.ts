@@ -74,6 +74,9 @@ export class BeurerBf720Adapter implements ScaleAdapter {
   readonly normalizesWeight = true;
   readonly unlockCommand: number[] = [];
   readonly unlockIntervalMs = 0;
+  // SIG User Data Service (0x181C) CCCD writes need an encrypted link; the
+  // node-ble handler attempts a best-effort bond before subscribing. #168
+  readonly requiresBonding = true;
 
   readonly characteristics: CharacteristicBinding[] = [
     { uuid: CHR_WEIGHT_MEASUREMENT, type: 'notify' },
