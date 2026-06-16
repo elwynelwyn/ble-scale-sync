@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.18.0](https://github.com/KristianP26/ble-scale-sync/compare/v1.17.0...v1.18.0) (2026-06-16)
+
+
+### Added
+
+* **exporter:** add Runalyze exporter ([#204](https://github.com/KristianP26/ble-scale-sync/issues/204)) ([8f8d7a0](https://github.com/KristianP26/ble-scale-sync/commit/8f8d7a0222bfb883fedf9c989764aed585769712))
+* **exporter:** add Wger exporter ([#205](https://github.com/KristianP26/ble-scale-sync/issues/205)) ([a9aed3a](https://github.com/KristianP26/ble-scale-sync/commit/a9aed3a7d57db9a8a93ebf6c6bc1bc8d710085d3))
+
+
+### Fixed
+
+* **ble:** bootstrap ESP32 autonomous GATT connect for GATT-only scales ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([2266086](https://github.com/KristianP26/ble-scale-sync/commit/226608682f973e444b3741cae4af92a9c98d5427))
+* **ble:** connect before publishing scan results on autonomous path ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([793fdb2](https://github.com/KristianP26/ble-scale-sync/commit/793fdb2025d8da47500b2eaa5a102c34811c0d2e))
+* **ble:** connect random-address GATT scales via ESP32 proxy ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([989ace6](https://github.com/KristianP26/ble-scale-sync/commit/989ace6a529d8252a149016349bad231fe07f940))
+* **ble:** correct misreported static-random addr_type at scan source ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([0a2097e](https://github.com/KristianP26/ble-scale-sync/commit/0a2097e8973445a6201599b41d5a7f872dfeb34e))
+* **ble:** derive connect addr_type from MAC bits for misreported random scales ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([4909038](https://github.com/KristianP26/ble-scale-sync/commit/4909038b2a4f2052d0fba85e7fc10131e4fad938))
+* **ble:** preserve bond by not RemoveDevice'ing paired scales ([#168](https://github.com/KristianP26/ble-scale-sync/issues/168)) ([d662199](https://github.com/KristianP26/ble-scale-sync/commit/d662199e45a14c6bfaf45018682177bbe618e6a1))
+* **ble:** register BlueZ pairing agent for BF720 encrypted bonding ([#168](https://github.com/KristianP26/ble-scale-sync/issues/168)) ([d2a1aaf](https://github.com/KristianP26/ble-scale-sync/commit/d2a1aafa650c4e02dc5da89db7c99d15a0f0e012))
+* **esp32:** restore aioble IRQ before GATT connect ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([c29dc1c](https://github.com/KristianP26/ble-scale-sync/commit/c29dc1c41439b35207b16759481aa81ffd6c5d9e))
+
+
+### Changed
+
+* **ble:** single pre-connect GC pass on PSRAM boards ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([62e134b](https://github.com/KristianP26/ble-scale-sync/commit/62e134b1f4859a613bfb99f002d60bbc5316edb6))
+
+
+### Docs
+
+* note minimal-delay autonomous connect for GATT scales ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([b679550](https://github.com/KristianP26/ble-scale-sync/commit/b6795504c6dc562c18c2551629fbbe38cd381c61))
+* recommend scale_mac for GATT-only scales over the ESP32 proxy ([#231](https://github.com/KristianP26/ble-scale-sync/issues/231)) ([8b670c1](https://github.com/KristianP26/ble-scale-sync/commit/8b670c1e1042d1b8d76fcb9c65d8eb3743cc49f7))
+
 ## [1.17.0](https://github.com/KristianP26/ble-scale-sync/compare/v1.16.1...v1.17.0) (2026-06-15)
 
 
