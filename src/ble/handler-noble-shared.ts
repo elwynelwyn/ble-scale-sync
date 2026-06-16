@@ -8,6 +8,7 @@ import type {
 import type { ScanOptions, ScanResult } from './types.js';
 import type { BleChar, BleDevice, RawReading } from './shared.js';
 import { waitForRawReading } from './shared.js';
+import { evaluateAdvertisement, GraceTimers } from './advertisement.js';
 import {
   bleLog,
   normalizeUuid,
@@ -333,8 +334,17 @@ export function createNobleHandler({ noble, getState }: NobleHandlerDeps) {
     return new Promise((resolve, reject) => {
       const targetAddr = peripheralAddress(targetPeripheral);
 
-      let graceTimer: ReturnType<typeof setTimeout> | null = null;
-      let bestWeightOnly: RawReading | null = null;
+      // Grace timer for passive adapters: a weight-only frame is held for
+      // IMPEDANCE_GRACE_MS in case an impedance-bearing frame follows; on
+      // timeout the weight-only reading resolves. Single target, so one key.
+      const grace = new GraceTimers(IMPEDANCE_GRACE_MS, (_addr, held) => {
+        cleanup();
+        bleLog.info(
+          `Broadcast reading (weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s): ` +
+            `${held.reading.weight.toFixed(2)} kg`,
+        );
+        resolve(held);
+      });
 
       const timeout = setTimeout(() => {
         cleanup();
@@ -343,10 +353,7 @@ export function createNobleHandler({ noble, getState }: NobleHandlerDeps) {
 
       const cleanup = () => {
         clearTimeout(timeout);
-        if (graceTimer) {
-          clearTimeout(graceTimer);
-          graceTimer = null;
-        }
+        grace.clear();
         noble.removeListener('discover', onDiscover);
         noble.stopScanningAsync().catch(() => {});
         abortSignal?.removeEventListener('abort', onAbort);
@@ -362,53 +369,41 @@ export function createNobleHandler({ noble, getState }: NobleHandlerDeps) {
       const onDiscover = (peripheral: Peripheral): void => {
         if (peripheralAddress(peripheral) !== targetAddr) return;
 
-        let reading: ScaleReading | null = null;
+        // Build a bare advertisement info for the shared decision. serviceData
+        // uuids are passed RAW (noble already yields lowercase short uuids) to
+        // match the pre-#242 behaviour of this site.
+        const svcDataList: Array<{ uuid: string; data: Buffer }> =
+          (peripheral.advertisement as { serviceData?: Array<{ uuid: string; data: Buffer }> })
+            ?.serviceData ?? [];
+        const info: BleDeviceInfo = {
+          localName: peripheral.advertisement?.localName ?? '',
+          serviceUuids: [],
+          manufacturerData: parseMfgData(peripheral.advertisement?.manufacturerData),
+          serviceData: svcDataList,
+        };
 
-        const mfgData = parseMfgData(peripheral.advertisement?.manufacturerData);
-        if (mfgData && adapter.parseBroadcast) {
-          reading = adapter.parseBroadcast(mfgData.data);
-        }
+        const decision = evaluateAdvertisement(adapter, info);
 
-        if (!reading && adapter.parseServiceData) {
-          const svcDataList: Array<{ uuid: string; data: Buffer }> =
-            (peripheral.advertisement as { serviceData?: Array<{ uuid: string; data: Buffer }> })
-              ?.serviceData ?? [];
-          for (const entry of svcDataList) {
-            reading = adapter.parseServiceData(entry.uuid, entry.data);
-            if (reading) break;
-          }
-        }
-
-        if (!reading) return;
-
-        if (onLiveData) onLiveData(reading);
-
-        // Passive-preferring adapters (Mi Scale 2) wait for an impedance-bearing
-        // frame; others have a final flag in the frame and emit immediately.
-        const requiresStable = adapter.preferPassive === true;
-        if (requiresStable && !adapter.isComplete(reading)) {
-          bleLog.debug(
-            `${adapter.name} broadcast frame not yet complete ` +
-              `(weight=${reading.weight.toFixed(2)} kg, impedance=${reading.impedance})`,
-          );
-          bestWeightOnly = { reading, adapter };
-          if (!graceTimer) {
-            graceTimer = setTimeout(() => {
-              graceTimer = null;
-              cleanup();
-              bleLog.info(
-                `Broadcast reading (weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s): ` +
-                  `${bestWeightOnly!.reading.weight.toFixed(2)} kg`,
-              );
-              resolve(bestWeightOnly!);
-            }, IMPEDANCE_GRACE_MS);
-          }
+        if (decision.kind === 'complete') {
+          if (onLiveData) onLiveData(decision.reading);
+          cleanup();
+          bleLog.info(`Broadcast reading: ${decision.reading.weight.toFixed(2)} kg`);
+          resolve({ reading: decision.reading, adapter });
           return;
         }
 
-        cleanup();
-        bleLog.info(`Broadcast reading: ${reading.weight.toFixed(2)} kg`);
-        resolve({ reading, adapter });
+        if (decision.kind === 'partial') {
+          if (onLiveData) onLiveData(decision.reading);
+          bleLog.debug(
+            `${adapter.name} broadcast frame not yet complete ` +
+              `(weight=${decision.reading.weight.toFixed(2)} kg, impedance=${decision.reading.impedance})`,
+          );
+          grace.hold(targetAddr, { reading: decision.reading, adapter });
+          return;
+        }
+
+        // wait / gatt / none: this is the broadcast-only path, so keep waiting
+        // for the next advertisement from the target.
       };
 
       noble.on('discover', onDiscover);
