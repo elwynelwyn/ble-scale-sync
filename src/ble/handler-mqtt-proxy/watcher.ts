@@ -3,6 +3,7 @@ import type { MqttProxyConfig } from '../../config/schema.js';
 import type { RawReading } from '../shared.js';
 import { waitForRawReading } from '../shared.js';
 import { evaluateAdvertisement, GraceTimers, DedupWindow } from '../advertisement.js';
+import type { Watcher, WatcherConfig } from '../reading-source.js';
 import { bleLog, withTimeout, errMsg, IMPEDANCE_GRACE_MS } from '../types.js';
 import { AsyncQueue } from '../async-queue.js';
 import { topics } from './topics.js';
@@ -60,7 +61,7 @@ type LifecycleHandler =
  * Subscribes once and keeps the message handler attached permanently,
  * queuing matched readings so none are missed during processing or cooldown.
  */
-export class ReadingWatcher {
+export class ReadingWatcher implements Watcher {
   private queue = new AsyncQueue<RawReading>();
   private started = false;
   private adapters: ScaleAdapter[];
@@ -321,11 +322,12 @@ export class ReadingWatcher {
     return this.queue.shift(signal);
   }
 
-  /** Update matching config (e.g. after SIGHUP config reload). */
-  updateConfig(adapters: ScaleAdapter[], targetMac?: string, profile?: UserProfile): void {
-    this.adapters = adapters;
-    this.targetMac = targetMac;
-    if (profile) this.profile = profile;
+  /** Update matching config (e.g. after SIGHUP config reload). scaleAuth is
+   *  ignored: the mqtt-proxy GATT path does not thread per-user auth. */
+  updateConfig(config: WatcherConfig): void {
+    this.adapters = config.adapters;
+    this.targetMac = config.targetMac;
+    if (config.profile) this.profile = config.profile;
   }
 
   private static readonly GATT_STALE_MS = 90_000;

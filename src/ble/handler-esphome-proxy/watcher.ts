@@ -7,6 +7,7 @@ import type {
 import type { EsphomeProxyConfig } from '../../config/schema.js';
 import { type RawReading, waitForRawReading } from '../shared.js';
 import { evaluateAdvertisement, GraceTimers, DedupWindow } from '../advertisement.js';
+import type { Watcher, WatcherConfig } from '../reading-source.js';
 import { bleLog, errMsg, IMPEDANCE_GRACE_MS } from '../types.js';
 import { AsyncQueue } from '../async-queue.js';
 import { EsphomeProxyPool } from './pool.js';
@@ -28,7 +29,7 @@ const GATT_WARN_LRU_MAX = 256;
  * waitForRawReading() seam, then disconnected immediately so no proxy slot is
  * held between weigh-ins.
  */
-export class ReadingWatcher {
+export class ReadingWatcher implements Watcher {
   private queue = new AsyncQueue<RawReading>();
   private started = false;
   private adapters: ScaleAdapter[];
@@ -94,16 +95,11 @@ export class ReadingWatcher {
     return this.queue.shift(signal);
   }
 
-  updateConfig(
-    adapters: ScaleAdapter[],
-    targetMac?: string,
-    profile?: UserProfile,
-    scaleAuth?: ScaleAuth,
-  ): void {
-    this.adapters = adapters;
-    this.targetMac = targetMac?.toLowerCase();
-    if (profile) this.profile = profile;
-    if (scaleAuth) this.scaleAuth = scaleAuth;
+  updateConfig(config: WatcherConfig): void {
+    this.adapters = config.adapters;
+    this.targetMac = config.targetMac?.toLowerCase();
+    if (config.profile) this.profile = config.profile;
+    if (config.scaleAuth) this.scaleAuth = config.scaleAuth;
   }
 
   private handleAd(info: BleDeviceInfo, address: string): void {

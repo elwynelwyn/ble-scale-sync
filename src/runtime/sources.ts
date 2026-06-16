@@ -44,11 +44,11 @@ export async function buildReadingSource(
       // edits to users[0].height/age/gender land on the next GATT cycle
       // without a process restart.
       onSourceReload: () =>
-        watcher.updateConfig(
+        watcher.updateConfig({
           adapters,
-          ctx.scaleMac,
-          resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-        ),
+          targetMac: ctx.scaleMac,
+          profile: resolveUserProfile(ctx.config.users[0], ctx.config.scale),
+        }),
     };
   }
 
@@ -70,12 +70,12 @@ export async function buildReadingSource(
       source: watcher,
       failureLogPrefix: 'Error processing ESPHome reading',
       onSourceReload: () =>
-        watcher.updateConfig(
+        watcher.updateConfig({
           adapters,
-          ctx.scaleMac,
-          resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-          esphomeScaleAuth(),
-        ),
+          targetMac: ctx.scaleMac,
+          profile: resolveUserProfile(ctx.config.users[0], ctx.config.scale),
+          scaleAuth: esphomeScaleAuth(),
+        }),
     };
   }
 

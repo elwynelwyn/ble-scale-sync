@@ -129,8 +129,10 @@ describe('buildReadingSource() dispatch (#186)', () => {
 
     bundle.onSourceReload?.();
     const watcher = bundle.source as unknown as { updateConfig: ReturnType<typeof vi.fn> };
-    expect(watcher.updateConfig).toHaveBeenCalledWith(ADAPTERS, ctx.scaleMac, {
-      __profile: 'sentinel',
+    expect(watcher.updateConfig).toHaveBeenCalledWith({
+      adapters: ADAPTERS,
+      targetMac: ctx.scaleMac,
+      profile: { __profile: 'sentinel' },
     });
   });
 
@@ -146,12 +148,12 @@ describe('buildReadingSource() dispatch (#186)', () => {
 
     bundle.onSourceReload?.();
     const watcher = bundle.source as unknown as { updateConfig: ReturnType<typeof vi.fn> };
-    expect(watcher.updateConfig).toHaveBeenCalledWith(
-      ADAPTERS,
-      ctx.scaleMac,
-      { __profile: 'sentinel' },
-      { pin: 1234, userIndex: 2 },
-    );
+    expect(watcher.updateConfig).toHaveBeenCalledWith({
+      adapters: ADAPTERS,
+      targetMac: ctx.scaleMac,
+      profile: { __profile: 'sentinel' },
+      scaleAuth: { pin: 1234, userIndex: 2 },
+    });
   });
 
   it('falls back to poll source when mqtt-proxy selected but mqttProxy is undefined', async () => {

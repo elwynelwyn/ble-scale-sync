@@ -1102,7 +1102,7 @@ describe('handler-mqtt-proxy', () => {
       await watcher.start();
 
       // Update to use adapter2
-      watcher.updateConfig([adapter2]);
+      watcher.updateConfig({ adapters: [adapter2] });
 
       mockClient._simulateMessage(
         `${PREFIX}/scan/results`,
