@@ -1,11 +1,8 @@
-import type {
-  ScaleAdapter,
-  ScaleReading,
-  BodyComposition,
-} from '../../interfaces/scale-adapter.js';
+import type { ScaleAdapter, BodyComposition } from '../../interfaces/scale-adapter.js';
 import type { EsphomeProxyConfig } from '../../config/schema.js';
 import type { ScanOptions, ScanResult } from '../types.js';
-import { type RawReading, waitForRawReading, hasParseableBroadcastSource } from '../shared.js';
+import { type RawReading, waitForRawReading } from '../shared.js';
+import { evaluateAdvertisement, GraceTimers } from '../advertisement.js';
 import { bleLog, errMsg, withTimeout, IMPEDANCE_GRACE_MS } from '../types.js';
 import { EsphomeProxyPool } from './pool.js';
 
@@ -70,13 +67,9 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
 
     // Per-address grace state so two scales advertising partial frames in the
     // same scan window do not clobber each other's pending fallback (#161).
-    const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const graceReadings = new Map<string, RawReading>();
-    const clearGrace = (): void => {
-      for (const t of graceTimers.values()) clearTimeout(t);
-      graceTimers.clear();
-      graceReadings.clear();
-    };
+    // Boxed (like `sub`) because it is only assigned inside the Promise executor,
+    // which TS would otherwise narrow to `never` in the finally.
+    const graceBox: { grace: GraceTimers | null } = { grace: null };
 
     try {
       return await withTimeout(
@@ -85,6 +78,15 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
           // GATT is connected on demand; guard so repeated advertisements for
           // the same scale do not open parallel sessions.
           const gattInFlight = new Set<string>();
+
+          const g = new GraceTimers(IMPEDANCE_GRACE_MS, (address, gr) => {
+            bleLog.info(
+              `Matched: ${gr.adapter.name} (${address}), weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s`,
+            );
+            bleLog.info(`Broadcast reading: ${gr.reading.weight} kg`);
+            resolve(gr);
+          });
+          graceBox.grace = g;
 
           sub.unsub = pool.onAdvertisement((info, address) => {
             const addrLc = address.toLowerCase();
@@ -99,68 +101,32 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
               return;
             }
 
-            let reading: ScaleReading | null = null;
+            const decision = evaluateAdvertisement(adapter, info);
 
-            if (adapter.parseBroadcast && info.manufacturerData) {
-              reading = adapter.parseBroadcast(info.manufacturerData.data);
-            }
-
-            if (!reading && adapter.parseServiceData && info.serviceData) {
-              for (const sd of info.serviceData) {
-                reading = adapter.parseServiceData(sd.uuid, sd.data);
-                if (reading) break;
-              }
-            }
-
-            // Adapters that prefer passive scanning (e.g. Mi Scale 2) emit a
-            // weight-only frame first and a weight+impedance frame moments later.
-            // Gate on isComplete + grace-timer for those. Other broadcast adapters
-            // (Eufy, QN-scale) embed a "final" flag in the frame itself, so any
-            // non-null reading is already stable, so emit immediately to avoid
-            // adding a 12s latency penalty on the existing path.
-            const requiresStable = adapter.preferPassive === true;
-            if (reading && (!requiresStable || adapter.isComplete(reading))) {
-              const pending = graceTimers.get(address);
-              if (pending) {
-                clearTimeout(pending);
-                graceTimers.delete(address);
-                graceReadings.delete(address);
-              }
+            // Passive adapters (e.g. Mi Scale 2) emit a weight-only frame first
+            // and a weight+impedance frame moments later, so they are held on a
+            // grace timer; other broadcast adapters resolve immediately.
+            if (decision.kind === 'complete') {
+              g.cancel(address);
               bleLog.info(`Matched: ${adapter.name} (${address})`);
-              bleLog.info(`Broadcast reading: ${reading.weight} kg`);
-              resolve({ reading, adapter });
+              bleLog.info(`Broadcast reading: ${decision.reading.weight} kg`);
+              resolve({ reading: decision.reading, adapter });
               return;
             }
 
-            // Partial frame for a passive adapter: start grace timer keyed on
-            // this address so a second scale's partial frame cannot overwrite.
-            if (reading && requiresStable) {
+            // Partial frame for a passive adapter: hold keyed on this address so
+            // a second scale's partial frame cannot overwrite.
+            if (decision.kind === 'partial') {
               bleLog.debug(
                 `${adapter.name} matched at ${address} but broadcast frame is not stable yet`,
               );
-              graceReadings.set(address, { reading, adapter });
-              if (!graceTimers.has(address)) {
-                graceTimers.set(
-                  address,
-                  setTimeout(() => {
-                    graceTimers.delete(address);
-                    const gr = graceReadings.get(address);
-                    graceReadings.delete(address);
-                    if (!gr) return;
-                    bleLog.info(
-                      `Matched: ${gr.adapter.name} (${address}), weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s`,
-                    );
-                    bleLog.info(`Broadcast reading: ${gr.reading.weight} kg`);
-                    resolve(gr);
-                  }, IMPEDANCE_GRACE_MS),
-                );
-              }
+              g.hold(address, { reading: decision.reading, adapter });
               return;
             }
 
             // Device still carries broadcast data this adapter parses but no
             // stable frame yet: keep waiting.
-            if (hasParseableBroadcastSource(adapter, info)) {
+            if (decision.kind === 'wait') {
               bleLog.debug(
                 `${adapter.name} matched at ${address} but broadcast frame is not stable yet`,
               );
@@ -169,14 +135,14 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
 
             // No broadcast source for this device and no GATT characteristic
             // either: nothing we can do, keep waiting.
-            if (!adapter.charNotifyUuid) {
+            if (decision.kind === 'none') {
               bleLog.debug(
                 `${adapter.name} matched at ${address} but has no broadcast or GATT path`,
               );
               return;
             }
 
-            // GATT adapter: connect on demand through the proxy that saw it.
+            // decision.kind === 'gatt': connect on demand through the proxy that saw it.
             if (gattInFlight.has(addrLc)) return;
             gattInFlight.add(addrLc);
             bleLog.info(`Matched: ${adapter.name} (${address}); opening GATT via ESPHome proxy`);
@@ -210,7 +176,7 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
           : `Timed out waiting for any recognized scale via ESPHome proxy.`,
       );
     } finally {
-      clearGrace();
+      graceBox.grace?.clear();
     }
   } finally {
     if (sub.unsub) sub.unsub();
