@@ -1,12 +1,12 @@
 import type {
   ScaleAdapter,
-  ScaleReading,
   BleDeviceInfo,
   UserProfile,
   ScaleAuth,
 } from '../../interfaces/scale-adapter.js';
 import type { EsphomeProxyConfig } from '../../config/schema.js';
 import { type RawReading, waitForRawReading } from '../shared.js';
+import { evaluateAdvertisement, GraceTimers, DedupWindow } from '../advertisement.js';
 import { bleLog, errMsg, IMPEDANCE_GRACE_MS } from '../types.js';
 import { AsyncQueue } from '../async-queue.js';
 import { EsphomeProxyPool } from './pool.js';
@@ -36,15 +36,22 @@ export class ReadingWatcher {
   private profile?: UserProfile;
   private scaleAuth?: ScaleAuth;
   private config: EsphomeProxyConfig;
-  private dedup = new Map<string, number>();
+  private readonly dedup = new DedupWindow(DEDUP_WINDOW_MS);
   private pool: EsphomeProxyPool | null = null;
   private unsub: (() => void) | null = null;
   private gattInFlight = new Set<string>();
   // LRU map (insertion-ordered): scales whose on-demand GATT connect failed,
   // so we warn once instead of on every advertisement.
   private gattWarnedFor = new Map<string, true>();
-  private graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private graceReadings = new Map<string, RawReading>();
+  /** Weight-only fallback timer per address; on elapse the held reading is
+   *  queued directly (no dedup — matches the prior grace-timer body). */
+  private readonly grace = new GraceTimers(IMPEDANCE_GRACE_MS, (address, gr) => {
+    bleLog.info(
+      `Matched: ${gr.adapter.name} (${address}), weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s`,
+    );
+    bleLog.info(`Broadcast reading: ${gr.reading.weight} kg`);
+    this.queue.push(gr);
+  });
 
   constructor(
     config: EsphomeProxyConfig,
@@ -106,71 +113,35 @@ export class ReadingWatcher {
     const adapter = this.adapters.find((a) => a.matches(info));
     if (!adapter) return;
 
-    let reading: ScaleReading | null = null;
+    // waitForBroadcast:false — this watcher GATT-connects devices whose
+    // broadcast yields nothing (QN Elis 1) from its per-advertisement stream
+    // rather than waiting (see the hasParseableBroadcastSource doc comment).
+    const decision = evaluateAdvertisement(adapter, info, { waitForBroadcast: false });
 
-    if (adapter.parseBroadcast && info.manufacturerData) {
-      reading = adapter.parseBroadcast(info.manufacturerData.data);
-    }
-
-    if (!reading && adapter.parseServiceData && info.serviceData) {
-      for (const sd of info.serviceData) {
-        reading = adapter.parseServiceData(sd.uuid, sd.data);
-        if (reading) break;
-      }
-    }
-
-    // Same passive-vs-immediate split as scanAndReadRaw. See comment there.
-    const requiresStable = adapter.preferPassive === true;
-    if (reading && (!requiresStable || adapter.isComplete(reading))) {
-      const gt = this.graceTimers.get(address);
-      if (gt) {
-        clearTimeout(gt);
-        this.graceTimers.delete(address);
-        this.graceReadings.delete(address);
-      }
-      this.pushDeduped(address, { reading, adapter }, reading.weight);
+    if (decision.kind === 'complete') {
+      this.grace.cancel(address);
+      this.pushDeduped(address, { reading: decision.reading, adapter }, decision.reading.weight);
       return;
     }
 
     // Partial broadcast frame for a passive adapter: grace timer fallback.
-    if (reading && requiresStable) {
-      this.graceReadings.set(address, { reading, adapter });
-      if (!this.graceTimers.has(address)) {
-        this.graceTimers.set(
-          address,
-          setTimeout(() => {
-            this.graceTimers.delete(address);
-            const gr = this.graceReadings.get(address);
-            this.graceReadings.delete(address);
-            if (!gr) return;
-            bleLog.info(
-              `Matched: ${gr.adapter.name} (${address}), weight only, no impedance within ${IMPEDANCE_GRACE_MS / 1000}s`,
-            );
-            bleLog.info(`Broadcast reading: ${gr.reading.weight} kg`);
-            this.queue.push(gr);
-          }, IMPEDANCE_GRACE_MS),
-        );
-      }
+    if (decision.kind === 'partial') {
+      this.grace.hold(address, { reading: decision.reading, adapter });
       return;
     }
 
     // Broadcast yielded nothing usable. If the adapter has a GATT path, connect
-    // on demand through the proxy pool.
-    if (adapter.charNotifyUuid) {
+    // on demand through the proxy pool. (decision is 'gatt' or 'none'.)
+    if (decision.kind === 'gatt') {
       this.readViaGatt(adapter, address, addrLc);
     }
   }
 
   private pushDeduped(address: string, raw: RawReading, weight: number): void {
-    const key = `${address}:${weight.toFixed(1)}`;
-    const now = Date.now();
-    this.pruneDedup(now);
-    const lastSeen = this.dedup.get(key);
-    if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
-      bleLog.debug(`Dedup skip: ${key}`);
+    if (!this.dedup.shouldEmit(address, weight)) {
+      bleLog.debug(`Dedup skip: ${address}:${weight.toFixed(1)}`);
       return;
     }
-    this.dedup.set(key, now);
     bleLog.info(`Matched: ${raw.adapter.name} (${address})`);
     bleLog.info(`Reading: ${weight} kg`);
     this.queue.push(raw);
@@ -223,16 +194,8 @@ export class ReadingWatcher {
     );
   }
 
-  private pruneDedup(now: number): void {
-    for (const [key, ts] of this.dedup) {
-      if (now - ts >= DEDUP_WINDOW_MS) this.dedup.delete(key);
-    }
-  }
-
   private async teardown(): Promise<void> {
-    for (const t of this.graceTimers.values()) clearTimeout(t);
-    this.graceTimers.clear();
-    this.graceReadings.clear();
+    this.grace.clear();
     if (this.unsub) {
       this.unsub();
       this.unsub = null;
