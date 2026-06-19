@@ -2,13 +2,16 @@ import { computeBiaFat, buildPayload } from './body-comp-helpers.js';
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  BroadcastSource,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16 } from './body-comp-helpers.js';
 import { bleLog } from '../ble/types.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 /** Format bytes as hex string for debug logging. */
 const hex = (data: number[] | Buffer): string =>
@@ -112,15 +115,21 @@ const MAX_STORED_RECORD_AGE_SEC = 90;
 const MAX_STORED_QUERY_ATTEMPTS = 6;
 const STORED_QUERY_RETRY_MS = 3000;
 
-export class QnScaleAdapter implements ScaleAdapter {
+export class QnScaleAdapter implements ScaleAdapterCore, GattWiring, BroadcastSource {
   readonly name = 'QN Scale';
+  readonly match: MatchDescriptor = {
+    priority: 250,
+    custom: true,
+    names: { includes: ['qn-scale', 'renpho', 'senssun', 'sencor'] },
+    serviceUuids: ['ae00', 'ffe0', 'fff0'],
+    charUuids: ['ae01', 'ae02'],
+    manufacturerId: 0xffff,
+  };
   readonly charNotifyUuid = CHR_NOTIFY;
   readonly charWriteUuid = CHR_WRITE;
   readonly altCharNotifyUuid = CHR_NOTIFY_T1;
   readonly altCharWriteUuid = CHR_WRITE_T1;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   /**
    * Weight divisor: 100 (Type 1 default) or 10 (Type 2).

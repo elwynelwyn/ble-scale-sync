@@ -1,12 +1,14 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 import { bleLog } from '../ble/types.js';
 
 // Renpho ES-26BB custom service / characteristic UUIDs
@@ -43,19 +45,17 @@ function isChecksumValid(data: Buffer): boolean {
  *   - Last byte = sum(prev) & 0xFF
  *   - Offline frames MUST be acked (55 AA 95 00 01 01 96), otherwise scale resends them on every reconnect.
  */
-export class RenphoEs26bbAdapter implements ScaleAdapter {
+export class RenphoEs26bbAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = 'Renpho ES-26BB';
+  readonly match: MatchDescriptor = { priority: 230, names: { exact: ['es-26bb-b'] } };
   readonly charNotifyUuid = CHR_RESULTS;
   readonly charWriteUuid = CHR_CONTROL;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   private ctx: ConnectionContext | null = null;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === 'es-26bb-b';
+    return matchesDescriptor(device, this.match);
   }
 
   async onConnected(ctx: ConnectionContext): Promise<void> {

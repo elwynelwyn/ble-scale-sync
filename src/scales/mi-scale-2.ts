@@ -1,11 +1,15 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
+  BroadcastSource,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { buildPayload } from './body-comp-helpers.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 /** Mi vendor history/body-comp characteristic (custom base UUID). */
 const CHR_MI_HISTORY = '00002a2f0000351221180009af100700';
@@ -29,8 +33,14 @@ const SVC_BODY_COMP = '0000181b00001000800000805f9b34fb';
  * Body-composition math is ported from openScale's MiScaleLib
  * (originally by prototux / MIBCS reverse-engineering).
  */
-export class MiScale2Adapter implements ScaleAdapter {
+export class MiScale2Adapter implements ScaleAdapterCore, GattWiring, Unlockable, BroadcastSource {
   readonly name = 'Xiaomi Mi Scale 2';
+  readonly match: MatchDescriptor = {
+    priority: 210,
+    custom: true,
+    names: { startsWith: ['mibcs', 'mibfs', 'mi scale', 'mi_scale'] },
+    serviceUuids: ['181b'],
+  };
   readonly charNotifyUuid = CHR_MI_HISTORY;
   readonly charWriteUuid = CHR_MI_HISTORY;
   readonly normalizesWeight = true;

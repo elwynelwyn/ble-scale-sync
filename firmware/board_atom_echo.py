@@ -24,6 +24,17 @@ CONNECT_TIMEOUT_MS = 10000
 CONNECT_SCAN_MS = 8000
 CONNECT_RETRIES = 2
 
+# Pre-connect IDF-heap guard floors (#139). Default 0 = pure always-on crash
+# floor (ble_bridge.CRASH_FLOOR_*). Raise these only after measuring a real
+# successful-connect heap delta on a PSRAM board: set CONNECT_MIN_IDF_FREE a
+# little above the observed (free_before - free_after) connection cost and
+# CONNECT_MIN_IDF_LARGEST a little above the observed post-connect largest
+# floor. gc.collect() cannot hand kilobytes back to the IDF heap, so a non-zero
+# value here only ever produces a clean skip, never a successful connect, on a
+# no-PSRAM board with WiFi up.
+CONNECT_MIN_IDF_LARGEST = 0
+CONNECT_MIN_IDF_FREE = 0
+
 # Aggressive GC to avoid OOM (~100 KB free after imports)
 AGGRESSIVE_GC = True
 GC_INTERVAL = 200  # main-loop iterations between gc.collect()

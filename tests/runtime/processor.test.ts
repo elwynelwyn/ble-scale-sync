@@ -137,6 +137,7 @@ function makeCtx(users: UserConfig[], overrides: CtxOverrides = {}): AppContext 
     esphomeProxy: undefined,
     signal: new AbortController().signal,
     exporterCache: new Map(),
+    lastExportedWeights: new Map(),
     embeddedBroker: null,
     display: overrides.display,
     abortApp: vi.fn(),
@@ -473,5 +474,41 @@ describe('processReading: historical replay', () => {
     await processReading(ctx, raw, { singleUserExporters: exporters });
 
     expect(dispatchExports).toHaveBeenCalledTimes(3);
+  });
+
+  it('single-user: dedups a replay frame against the runtime anchor on a LATER reading (#164)', async () => {
+    const ctx = makeCtx([dad]);
+    const exporters = [fakeExporter('garmin')];
+
+    // First weigh-in establishes the runtime anchor at the live raw weight 82.5.
+    await processReading(ctx, rawReading({ weight: 82.5, impedance: 500 }), {
+      singleUserExporters: exporters,
+    });
+    expect(ctx.lastExportedWeights.get('dad')).toBe(82.5);
+
+    vi.mocked(dispatchExports).mockClear();
+
+    // Second reading: a cache-replay historical frame at 82.55 (within +/-0.1 of
+    // the anchor) is deduped; the live 83.0 frame dispatches.
+    const raw = rawWithHistory(
+      { weight: 82.55, impedance: 480, timestamp: new Date('2025-07-01T07:00:00Z') },
+      { weight: 83.0, impedance: 500 },
+    );
+    await processReading(ctx, raw, { singleUserExporters: exporters });
+
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(
+      (vi.mocked(dispatchExports).mock.calls[0][2] as { timestamp?: Date }).timestamp,
+    ).toBeUndefined();
+    expect(ctx.lastExportedWeights.get('dad')).toBe(83.0);
+  });
+
+  it('single-user: dry-run does not advance the runtime dedup anchor', async () => {
+    const ctx = makeCtx([dad]);
+    // Dry run = undefined exporters. The anchor must stay unset so a later real
+    // export is not spuriously deduped.
+    await processReading(ctx, rawReading({ weight: 82.5, impedance: 500 }));
+    expect(ctx.lastExportedWeights.has('dad')).toBe(false);
+    expect(dispatchExports).not.toHaveBeenCalled();
   });
 });

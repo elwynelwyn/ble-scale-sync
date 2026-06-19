@@ -52,6 +52,13 @@ _last_beep_time = 0
 # appears in a scan, eliminating the MQTT round-trip latency (#201).
 _auto_connect = True  # opt-out via config topic {"autoConnect": false}
 
+# Lazy host-ordered notify enable (#231): when the host advertises
+# lazy_notify=True on the config topic, BLE notify is enabled only on a per-char
+# subscribe/<uuid> command (after the host has subscribed to notify/<uuid>), so
+# the QN/Renpho ES-CS20M spontaneous 0x12 kickoff frame is never lost. Absent
+# flag (old host) keeps today's eager enable, so there is no regression.
+_lazy_notify = False
+
 
 def topic(suffix):
     return f"{BASE}/{suffix}"
@@ -76,14 +83,15 @@ mqtt_config["queue_len"] = 0  # callback mode
 
 def on_message(topic_bytes, msg, retained):
     """Sync callback — queue the command for async processing."""
-    global _scale_macs, _auto_connect
+    global _scale_macs, _auto_connect, _lazy_notify
     t = topic_bytes.decode() if isinstance(topic_bytes, (bytes, bytearray)) else topic_bytes
     if t == topic("config"):
         try:
             data = json.loads(msg)
             _scale_macs = set(data.get("scales", []))
             _auto_connect = data.get("autoConnect", True)
-            print(f"Config: {len(_scale_macs)} scale MAC(s), autoConnect={_auto_connect}")
+            _lazy_notify = data.get("lazy_notify", False)
+            print(f"Config: {len(_scale_macs)} scale MAC(s), autoConnect={_auto_connect}, lazyNotify={_lazy_notify}")
             if board.HAS_DISPLAY:
                 ui.on_config_update(data.get("users", []))
                 ui.on_scale_macs_update(len(_scale_macs) > 0)
@@ -109,6 +117,11 @@ async def on_connect(client_ref):
     if _char_subscribed:
         await client_ref.subscribe(topic("write/#"), 0)
         await client_ref.subscribe(topic("read/#"), 0)
+    # Subscribe the per-char notify-enable wildcard unconditionally (NOT gated on
+    # _char_subscribed like write/# and read/#): the host publishes subscribe/<uuid>
+    # right after the connected event, so gating it would reintroduce an ordering
+    # race. The topic is idle until a GATT connect happens (#231).
+    await client_ref.subscribe(topic("subscribe/#"), 0)
     _subs_ready = True
     if board.HAS_DISPLAY:
         ui.on_mqtt_change(True)
@@ -178,17 +191,17 @@ def _find_scale_in_raw(raw_results):
     Returns (mac, addr_bytes, addr_type) or None. Non-destructive peek used by the
     autonomous connect logic to skip the MQTT round-trip (#201).
 
-    Some NimBLE / ESP-IDF builds misreport a static random scale as public in the
-    scan IRQ. A static random address is unambiguous from its top two bits
-    (addr[0] & 0xC0 == 0xC0), so trust the bits over the reported type: connecting
-    with the wrong addr_type only ever surfaces as a connect TimeoutError because
-    aioble gap_connect matches on addr AND addr_type (#231).
+    The controller-reported addr_type (the advertising PDU TxAdd bit) is
+    authoritative and is passed through unchanged. An earlier build forced
+    addr_type=1 whenever addr[0] & 0xC0 == 0xC0 on the theory that an FF address
+    must be random static, but a public address may use any bytes and cheap scale
+    SoCs advertise arbitrary public addresses that also start with 0xFF, so that
+    override connected the QN-Scale as random and it never matched the public
+    advertiser (#231).
     """
     for addr_bytes, addr_type, _rssi, _raw in raw_results:
         mac = ":".join("%02X" % b for b in addr_bytes)
         if mac in _scale_macs:
-            if (addr_bytes[0] & 0xC0) == 0xC0:
-                addr_type = 1
             print(f"Auto-connect: found known scale {mac} in raw buffer (addr_type={addr_type})")
             return mac, addr_bytes, addr_type
     return None
@@ -221,17 +234,12 @@ async def _auto_gatt_connect(mac, addr_type):
             await client.subscribe(topic("read/#"), 0)
             _char_subscribed = True
 
-        for char_info in result["chars"]:
-            if "notify" in char_info["properties"]:
-                uuid_str = char_info["uuid"]
-
-                def make_publish_fn(u):
-                    async def publish_fn(_source_uuid, data):
-                        await client.publish(topic(f"notify/{u}"), data, qos=0)
-                    return publish_fn
-
-                await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
-                print(f"Auto-connect: notify enabled for {uuid_str}")
+        if not _lazy_notify:
+            for char_info in result["chars"]:
+                if "notify" in char_info["properties"]:
+                    uuid_str = char_info["uuid"]
+                    await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+                    print(f"Auto-connect: notify enabled for {uuid_str}")
 
         bridge.set_on_disconnect(lambda: _pending.append(("__ble_disconnected__", b"")))
 
@@ -241,6 +249,9 @@ async def _auto_gatt_connect(mac, addr_type):
         await client.publish(topic("connected"), json.dumps(result), qos=0)
         print(f"Auto-connect to {mac} succeeded, {len(result['chars'])} chars published to host")
     except Exception as e:
+        import sys
+
+        sys.print_exception(e)
         print(f"Auto-connect failed for {mac}: {describe_exc(e)}")
         _scan_paused = False
         if board.CONTINUOUS_SCAN:
@@ -409,6 +420,23 @@ async def scan_loop():
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
 
+def make_publish_fn(u):
+    """Forward notifications from char `u` to notify/<u> (qos 0), as today."""
+    async def publish_fn(_source_uuid, data):
+        await client.publish(topic(f"notify/{u}"), data, qos=0)
+    return publish_fn
+
+
+async def handle_subscribe(uuid_str):
+    """Enable BLE notify on one characteristic on host command (#231 lazy mode).
+
+    The host publishes subscribe/<uuid> AFTER it has subscribed to the MQTT
+    notify/<uuid> topic, so the firmware-triggered kickoff frame (QN 0x12) always
+    has a listener. Mirrors native char.subscribe() ordering over the proxy."""
+    await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+    print(f"Subscribe: notify enabled for {uuid_str}")
+
+
 async def handle_connect(payload):
     """Connect to a BLE device, discover chars, start notify forwarding."""
     global _char_subscribed, _busy, _scan_paused
@@ -442,16 +470,11 @@ async def handle_connect(payload):
             await client.subscribe(topic("read/#"), 0)
             _char_subscribed = True
 
-        for char_info in result["chars"]:
-            if "notify" in char_info["properties"]:
-                uuid_str = char_info["uuid"]
-
-                def make_publish_fn(u):
-                    async def publish_fn(_source_uuid, data):
-                        await client.publish(topic(f"notify/{u}"), data, qos=0)
-                    return publish_fn
-
-                await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+        if not _lazy_notify:
+            for char_info in result["chars"]:
+                if "notify" in char_info["properties"]:
+                    uuid_str = char_info["uuid"]
+                    await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
 
         bridge.set_on_disconnect(lambda: _pending.append(("__ble_disconnected__", b"")))
         await client.publish(topic("connected"), json.dumps(result), qos=0)
@@ -598,6 +621,9 @@ async def main():
                         except Exception as e:
                             import sys
                             sys.print_exception(e)
+                elif t.startswith(topic("subscribe/")):
+                    uuid_str = t[len(topic("subscribe/")):]
+                    await handle_subscribe(uuid_str)
                 elif t.startswith(topic("write/")):
                     uuid_str = t[len(topic("write/")):]
                     await handle_write(uuid_str, msg)

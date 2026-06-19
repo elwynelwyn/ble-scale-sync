@@ -28,6 +28,12 @@ CONNECT_TIMEOUT_MS = 15000
 CONNECT_SCAN_MS = 15000
 CONNECT_RETRIES = 1
 
+# Pre-connect IDF-heap guard floors (#139). Default 0 keeps the gate at the
+# always-on crash floor; this PSRAM board has ample IDF headroom so it never
+# trips.
+CONNECT_MIN_IDF_LARGEST = 0
+CONNECT_MIN_IDF_FREE = 0
+
 # No memory pressure
 AGGRESSIVE_GC = False
 GC_INTERVAL = 1000

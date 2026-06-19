@@ -30,6 +30,11 @@ export async function publishConfig(
       payload.autoConnect = false;
       bleLog.debug('publishConfig: autoConnect disabled, sending opt-out to ESP32');
     }
+    // Advertise host-ordered (lazy) notify enable so the firmware enables BLE
+    // notify only on a per-char subscribe command, after the host has subscribed
+    // to the MQTT notify topic. This closes the #231 QN/Renpho 0x12 kickoff race.
+    // New firmware honors it; old firmware ignores it and stays eager.
+    payload.lazy_notify = true;
     await client.publishAsync(t.config, JSON.stringify(payload), { retain: true });
   } finally {
     await releaseClient(client, ephemeral);

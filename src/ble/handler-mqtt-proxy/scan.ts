@@ -1,13 +1,14 @@
 import type {
   ScaleAdapter,
-  ScaleReading,
   BleDeviceInfo,
   BodyComposition,
 } from '../../interfaces/scale-adapter.js';
 import type { MqttProxyConfig } from '../../config/schema.js';
 import type { ScanOptions, ScanResult } from '../types.js';
 import type { RawReading } from '../shared.js';
-import { waitForRawReading, hasParseableBroadcastSource } from '../shared.js';
+import { waitForRawReading } from '../shared.js';
+import { resolveAdapter } from '../../scales/resolve.js';
+import { evaluateAdvertisement } from '../advertisement.js';
 import { bleLog, normalizeUuid, withTimeout } from '../types.js';
 import { COMMAND_TIMEOUT_MS, topics, type Topics } from './topics.js';
 import { type MqttClient, createMqttClient } from './client.js';
@@ -149,54 +150,45 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
 
     for (const entry of candidates) {
       const info = toBleDeviceInfo(entry);
-      const adapter = adapters.find((a) => a.matches(info));
+      const adapter = resolveAdapter(info, adapters);
       if (!adapter) continue;
 
       bleLog.info(`Matched: ${adapter.name} (${entry.name || entry.address})`);
 
-      // Extract reading from broadcast advertisement data.
-      // Passive-preferring adapters (Mi Scale 2) gate on isComplete + grace
-      // fallback; others emit any non-null reading immediately.
-      {
-        let reading: ScaleReading | null = null;
-        if (adapter.parseBroadcast && entry.manufacturer_data) {
-          reading = adapter.parseBroadcast(Buffer.from(entry.manufacturer_data, 'hex'));
-        }
-        if (!reading && adapter.parseServiceData) {
-          for (const sd of info.serviceData ?? []) {
-            reading = adapter.parseServiceData(sd.uuid, sd.data);
-            if (reading) break;
-          }
-        }
-        const requiresStable = adapter.preferPassive === true;
-        if (reading && (!requiresStable || adapter.isComplete(reading))) {
-          bleLog.info(`Broadcast reading: ${reading.weight} kg`);
-          registerScaleMac(config, entry.address).catch(() => {});
-          return { reading, adapter };
-        }
-        // Save weight-only as a fallback in case no impedance-bearing frame is found.
-        if (reading && requiresStable && !weightOnlyFallback) {
-          weightOnlyFallback = { reading, adapter, address: entry.address };
-        }
+      // Classify the advertisement with the shared decision (#242).
+      const decision = evaluateAdvertisement(adapter, info);
+
+      if (decision.kind === 'complete') {
+        bleLog.info(`Broadcast reading: ${decision.reading.weight} kg`);
+        registerScaleMac(config, entry.address).catch(() => {});
+        return { reading: decision.reading, adapter };
       }
 
-      // A passive adapter is holding a weight-only frame, or this device still
-      // carries broadcast data the adapter parses — keep scanning for a
-      // stable/complete reading rather than connecting.
-      if (weightOnlyFallback || hasParseableBroadcastSource(adapter, info)) {
+      // Save the FIRST weight-only frame as a fallback. Single-shot scan: this
+      // processes one scan snapshot and cannot wait for a future frame, so there
+      // is no grace timer here (unlike the streaming ReadingWatcher).
+      if (decision.kind === 'partial' && !weightOnlyFallback) {
+        weightOnlyFallback = { reading: decision.reading, adapter, address: entry.address };
+      }
+
+      // A saved weight-only fallback, or a device still carrying broadcast data
+      // the adapter parses — keep scanning for a stable reading rather than
+      // connecting. (A saved fallback means GATT must NOT be opened, matching the
+      // pre-#242 `weightOnlyFallback || hasParseableBroadcastSource` guard.)
+      if (weightOnlyFallback || decision.kind === 'wait') {
         bleLog.debug(`${adapter.name} supports broadcast, waiting for stable reading...`);
         continue;
       }
 
       // No broadcast source for this device and no GATT path either — nothing
       // we can do for this candidate.
-      if (!adapter.charNotifyUuid) {
+      if (decision.kind === 'none') {
         bleLog.debug(`${adapter.name} matched but has no broadcast or GATT path`);
         continue;
       }
 
-      // GATT fallback: adapter matched, no broadcast support for this device
-      // (#201: dual-mode adapters like QN Scale must reach this).
+      // decision.kind === 'gatt': adapter matched, no broadcast support for this
+      // device (#201: dual-mode adapters like QN Scale must reach this).
       bleLog.info(`No broadcast data for ${adapter.name}; connecting via GATT proxy...`);
       const { charMap, device } = await mqttGattConnect(
         client,
@@ -268,7 +260,7 @@ export async function scanDevices(
 
     return scanResults.map((entry) => {
       const info = toBleDeviceInfo(entry);
-      const matched = adapters.find((a) => a.matches(info));
+      const matched = resolveAdapter(info, adapters);
       return {
         address: entry.address,
         name: entry.name,

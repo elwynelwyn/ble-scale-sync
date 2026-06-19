@@ -18,6 +18,12 @@ export class MqttBleChar implements BleChar {
     };
     this.client.on('message', handler);
     await this.client.subscribeAsync(topic);
+    // Ordering is the whole point of #231: the MQTT notify subscription and the
+    // message handler are in place BEFORE we tell the firmware to enable BLE
+    // notify, so the firmware-triggered kickoff frame (QN/Renpho 0x12) always has
+    // a listener. New firmware enables notify on this command; old firmware (eager)
+    // ignores it and behaves exactly as before.
+    await this.client.publishAsync(`${this.base}/subscribe/${this.uuid}`, '');
     return () => {
       this.client.removeListener('message', handler);
     };

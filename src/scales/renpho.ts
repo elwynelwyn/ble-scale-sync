@@ -1,11 +1,14 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload } from './body-comp-helpers.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 /**
  * Ported from openScale's RenphoHandler.kt
@@ -34,8 +37,14 @@ const CHR_CUSTOM0 = uuid16(0xffe2); // write  — vendor magic commands
 const SVC_QN_T1 = 'ffe0';
 const SVC_QN_T2 = 'fff0';
 
-export class RenphoScaleAdapter implements ScaleAdapter {
+export class RenphoScaleAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Renpho ES-WBE28';
+  readonly match: MatchDescriptor = {
+    priority: 240,
+    custom: true,
+    names: { includes: ['renpho'] },
+    serviceUuids: ['181b', '181d'],
+  };
   readonly charNotifyUuid = CHR_WEIGHT;
   readonly charWriteUuid = CHR_CUSTOM0;
   readonly normalizesWeight = true;

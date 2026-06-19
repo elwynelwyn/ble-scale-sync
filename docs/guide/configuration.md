@@ -53,19 +53,21 @@ If you prefer manual configuration, here's the full reference. See [`config.yaml
 ```yaml
 ble:
   scale_mac: 'FF:03:00:13:A1:04'
+  # bind_key: '0123456789abcdef0123456789abcdef' # Xiaomi S800 only
   # handler: auto
   # noble_driver: abandonware
   # adapter: hci1
 ```
 
-| Field           | Required                    | Default        | Description                                                                                                                                           |
-| --------------- | --------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scale_mac`     | Recommended                 | Auto-discovery | MAC address, or a CoreBluetooth UUID on macOS (bare 32-hex as the wizard writes it, or the dashed form). Prevents connecting to a neighbor's scale.   |
-| `handler`       | No                          | `auto`         | Transport: `auto` (local radio), `mqtt-proxy` (ESP32 over MQTT), `esphome-proxy` (ESPHome Native API). See below.                                     |
-| `noble_driver`  | No                          | OS default     | `abandonware` or `stoprocent`. Overrides the default BLE driver. Only applies when `handler: auto`.                                                   |
-| `adapter`       | No                          | System default | Linux only. Select a specific Bluetooth adapter (e.g., `hci0`, `hci1`). See below.                                                                    |
-| `mqtt_proxy`    | If `handler: mqtt-proxy`    | (none)         | MQTT proxy connection (`broker_url`, `device_id`, `topic_prefix`, `username`, `password`, `auto_connect`, `embedded_broker_*`). See [ESP32 BLE Proxy](./esp32-proxy). |
-| `esphome_proxy` | If `handler: esphome-proxy` | (none)         | ESPHome Native API connection (`host`, `port`, `encryption_key` or `password`, `client_info`). See [ESPHome Bluetooth Proxy](./esphome-proxy).        |
+| Field           | Required                    | Default        | Description                                                                                                                                                                                          |
+| --------------- | --------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scale_mac`     | Recommended                 | Auto-discovery | MAC address, or a CoreBluetooth UUID on macOS (bare 32-hex as the wizard writes it, or the dashed form). Prevents connecting to a neighbor's scale.                                                  |
+| `bind_key`      | Xiaomi S800 only            | (none)         | 32-char hex per-device MiBeacon key from the Mi cloud (extract with the community Xiaomi-cloud-tokens-extractor). Decrypts only the device's own FE95 broadcast. Keep it secret; it is a credential. |
+| `handler`       | No                          | `auto`         | Transport: `auto` (local radio), `mqtt-proxy` (ESP32 over MQTT), `esphome-proxy` (ESPHome Native API). See below.                                                                                    |
+| `noble_driver`  | No                          | OS default     | `abandonware` or `stoprocent`. Overrides the default BLE driver. Only applies when `handler: auto`.                                                                                                  |
+| `adapter`       | No                          | System default | Linux only. Select a specific Bluetooth adapter (e.g., `hci0`, `hci1`). See below.                                                                                                                   |
+| `mqtt_proxy`    | If `handler: mqtt-proxy`    | (none)         | MQTT proxy connection (`broker_url`, `device_id`, `topic_prefix`, `username`, `password`, `auto_connect`, `embedded_broker_*`). See [ESP32 BLE Proxy](./esp32-proxy).                                |
+| `esphome_proxy` | If `handler: esphome-proxy` | (none)         | ESPHome Native API connection (`host`, `port`, `encryption_key` or `password`, `client_info`). See [ESPHome Bluetooth Proxy](./esphome-proxy).                                                       |
 
 ::: tip BLE adapter selection (Linux only)
 If your device has multiple Bluetooth adapters, you can choose which one BLE Scale Sync uses. By default, the first adapter (`hci0`) is used.
@@ -137,7 +139,7 @@ global_exporters:
     password: '${GARMIN_PASSWORD}'
 ```
 
-Shared by all users unless a user defines their own `exporters` list. See [Exporters](/exporters) for all 9 targets and their configuration fields.
+Shared by all users unless a user defines their own `exporters` list. See [Exporters](/exporters) for all 11 targets and their configuration fields.
 
 ### Runtime
 

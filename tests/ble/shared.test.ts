@@ -3,6 +3,7 @@ import {
   waitForReading,
   waitForRawReading,
   findMissingCharacteristics,
+  resolveWriteChar,
 } from '../../src/ble/shared.js';
 import type { BleChar, BleDevice } from '../../src/ble/shared.js';
 import { normalizeUuid, bleLog } from '../../src/ble/types.js';
@@ -996,6 +997,41 @@ describe('waitForRawReading() — per-frame ACK + completion hold', () => {
     const result = await promise;
     expect(result.reading).toEqual({ weight: 83.4, impedance: 0 });
   });
+
+  it('routes per-frame ACK through the characteristics[] write binding (not charWriteUuid)', async () => {
+    const notifyChar = createMockChar();
+    const writeChar = createMockChar();
+    const device = createMockDevice();
+    const WRITE2 = '0000fff500001000800000805f9b34fb';
+    const { charMap } = createCharMap([
+      [NOTIFY_UUID, notifyChar],
+      [WRITE2, writeChar],
+    ]);
+
+    const adapter = createLegacyAdapter({
+      charWriteUuid: '0000dead00001000800000805f9b34fb', // absent: old code could not ack
+      characteristics: [
+        { uuid: NOTIFY_UUID, type: 'notify' },
+        { uuid: WRITE2, type: 'write' },
+      ],
+      onConnected: vi.fn(),
+      buildAck: vi.fn(() => [0xaa, 0xbb]),
+      parseNotification: vi.fn((d: Buffer) =>
+        d[0] === 0x99 ? { weight: 75, impedance: 500 } : null,
+      ),
+    });
+
+    const promise = waitForRawReading(charMap, device, adapter, PROFILE, '');
+    await vi.waitFor(() => expect(notifyChar.subscribeCalled).toBe(true));
+
+    notifyChar.triggerData(Buffer.from([0x01]));
+    await vi.waitFor(() =>
+      expect(writeChar.writtenData.some((b) => b.equals(Buffer.from([0xaa, 0xbb])))).toBe(true),
+    );
+
+    notifyChar.triggerData(Buffer.from([0x99]));
+    await promise;
+  });
 });
 
 // ─── Weight normalization tests ─────────────────────────────────────────────
@@ -1166,5 +1202,79 @@ describe('findMissingCharacteristics()', () => {
       ],
     });
     expect(findMissingCharacteristics(charMap, adapter)).toEqual([WRITE_UUID]);
+  });
+});
+
+describe('resolveWriteChar()', () => {
+  const WRITE2_UUID = '0000fff500001000800000805f9b34fb';
+
+  it('resolves the legacy charWriteUuid when no characteristics declared', () => {
+    const writeChar = createMockChar();
+    const { charMap } = createCharMap([[WRITE_UUID, writeChar]]);
+    const adapter = createLegacyAdapter();
+    expect(resolveWriteChar(charMap, adapter)).toBe(writeChar);
+  });
+
+  it('falls back to altCharWriteUuid when primary write char absent', () => {
+    const altWriteChar = createMockChar();
+    const ALT_WRITE = '0000ffe300001000800000805f9b34fb';
+    const { charMap } = createCharMap([[ALT_WRITE, altWriteChar]]);
+    const adapter = createLegacyAdapter({ altCharWriteUuid: ALT_WRITE });
+    expect(resolveWriteChar(charMap, adapter)).toBe(altWriteChar);
+  });
+
+  it('resolves the characteristics[] write binding even when charWriteUuid is absent', () => {
+    const writeChar = createMockChar();
+    const { charMap } = createCharMap([[WRITE2_UUID, writeChar]]);
+    const adapter = createLegacyAdapter({
+      charWriteUuid: '0000dead00001000800000805f9b34fb', // not in the map
+      characteristics: [
+        { uuid: NOTIFY_UUID, type: 'notify' },
+        { uuid: WRITE2_UUID, type: 'write' },
+      ],
+    });
+    expect(resolveWriteChar(charMap, adapter)).toBe(writeChar);
+  });
+
+  it('returns undefined when nothing resolves', () => {
+    const { charMap } = createCharMap([[NOTIFY_UUID, createMockChar()]]);
+    const adapter = createLegacyAdapter({
+      charWriteUuid: '0000dead00001000800000805f9b34fb',
+    });
+    expect(resolveWriteChar(charMap, adapter)).toBeUndefined();
+  });
+});
+
+describe('waitForReading() — adapter with no unlock wiring (#244)', () => {
+  it('arms no unlock interval and writes nothing when unlock fields are absent', async () => {
+    const notifyChar = createMockChar();
+    const writeChar = createMockChar();
+    const device = createMockDevice();
+    const { charMap } = createCharMap([
+      [NOTIFY_UUID, notifyChar],
+      [WRITE_UUID, writeChar],
+    ]);
+
+    // No unlockCommand / unlockIntervalMs, no onConnected: a pure
+    // notify-and-parse adapter. Legal because Unlockable is now opt-in.
+    const adapter: ScaleAdapter = {
+      name: 'NoUnlock',
+      charNotifyUuid: NOTIFY_UUID,
+      charWriteUuid: WRITE_UUID,
+      matches: (_i: BleDeviceInfo) => true,
+      parseNotification: (data: Buffer) =>
+        data[0] === 0x10 ? { weight: 75.5, impedance: 500 } : null,
+      isComplete: (r: ScaleReading) => r.weight > 0 && r.impedance > 0,
+      computeMetrics: () => SAMPLE_BODY_COMP,
+    };
+
+    const promise = waitForReading(charMap, device, adapter, PROFILE, '');
+    await vi.waitFor(() => expect(notifyChar.subscribeCalled).toBe(true));
+    notifyChar.triggerData(Buffer.from([0x10]));
+
+    const result = await promise;
+    expect(result).toEqual(SAMPLE_BODY_COMP);
+    // No legacy unlock write was issued.
+    expect(writeChar.writtenData.length).toBe(0);
   });
 });

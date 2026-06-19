@@ -1,11 +1,14 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 /** Bitmask flags for tracking which frame types have been received. */
 const FRAME_WEIGHT = 0x01; // 0xA5
@@ -28,8 +31,9 @@ const FRAME_ALL = FRAME_WEIGHT | FRAME_FAT | FRAME_MUSCLE | FRAME_BMR;
  *   0xD0 = BMR (ignored).
  * Measurement is complete when all 4 frame types have been received.
  */
-export class SenssunAdapter implements ScaleAdapter {
+export class SenssunAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Senssun Fat Scale';
+  readonly match: MatchDescriptor = { priority: 260, names: { exact: ['senssun fat'] } };
   readonly charNotifyUuid = uuid16(0xfff1);
   readonly charWriteUuid = uuid16(0xfff2);
   readonly normalizesWeight = true;
@@ -50,8 +54,7 @@ export class SenssunAdapter implements ScaleAdapter {
   private framesMask = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === 'senssun fat';
+    return matchesDescriptor(device, this.match);
   }
 
   parseNotification(data: Buffer): ScaleReading | null {

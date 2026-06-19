@@ -9,6 +9,7 @@ import type {
 } from '../interfaces/scale-adapter.js';
 import type { WeightUnit } from '../config/schema.js';
 import { LBS_TO_KG, normalizeUuid, errMsg, bleLog } from './types.js';
+import { HistoryBuffer, HoldTimer } from './notification-processor.js';
 
 // ─── Broadcast-vs-GATT routing ────────────────────────────────────────────────
 
@@ -55,8 +56,33 @@ export interface BleDevice {
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
-function resolveChar(charMap: Map<string, BleChar>, uuid: string): BleChar | undefined {
+function resolveChar(charMap: Map<string, BleChar>, uuid: string | undefined): BleChar | undefined {
+  if (uuid === undefined) return undefined;
   return charMap.get(normalizeUuid(uuid));
+}
+
+/**
+ * Resolve the characteristic this adapter writes to for handler-driven writes
+ * (per-frame ACKs). Prefers the `characteristics[]` write binding so a
+ * multi-char adapter that declares no legacy `charWriteUuid` can still ack,
+ * then falls back to the legacy `charWriteUuid` / `altCharWriteUuid` pair.
+ * Returns undefined when no write char is present (caller no-ops).
+ */
+export function resolveWriteChar(
+  charMap: Map<string, BleChar>,
+  adapter: ScaleAdapter,
+): BleChar | undefined {
+  if (adapter.characteristics) {
+    const writeBinding = adapter.characteristics.find((b) => b.type === 'write');
+    if (writeBinding) {
+      const char = resolveChar(charMap, writeBinding.uuid);
+      if (char) return char;
+    }
+  }
+  return (
+    resolveChar(charMap, adapter.charWriteUuid) ??
+    (adapter.altCharWriteUuid ? resolveChar(charMap, adapter.altCharWriteUuid) : undefined)
+  );
 }
 
 /**
@@ -89,12 +115,12 @@ export function findMissingCharacteristics(
   const hasNotify =
     !!resolveChar(charMap, adapter.charNotifyUuid) ||
     (!!adapter.altCharNotifyUuid && !!resolveChar(charMap, adapter.altCharNotifyUuid));
-  if (!hasNotify) missing.push(adapter.charNotifyUuid);
+  if (!hasNotify) missing.push(adapter.charNotifyUuid ?? '<no notify uuid>');
 
   const hasWrite =
     !!resolveChar(charMap, adapter.charWriteUuid) ||
     (!!adapter.altCharWriteUuid && !!resolveChar(charMap, adapter.altCharWriteUuid));
-  if (!hasWrite) missing.push(adapter.charWriteUuid);
+  if (!hasWrite) missing.push(adapter.charWriteUuid ?? '<no write uuid>');
 
   return missing;
 }
@@ -162,15 +188,21 @@ function initializeAdapter(
       await adapter.onConnected(ctx);
       bleLog.debug('adapter.onConnected() completed');
     } else {
-      // Legacy unlock command interval
+      // Legacy unlock command interval. Absent unlock fields mean this adapter
+      // has no legacy unlock; do nothing (it is a pure notify-and-parse or a
+      // broadcast adapter). #244: no adapter fakes an empty unlock anymore.
       const writeChar =
         resolveChar(charMap, adapter.charWriteUuid) ??
         (adapter.altCharWriteUuid ? resolveChar(charMap, adapter.altCharWriteUuid) : undefined);
       if (!writeChar) return;
 
-      const commands = adapter.unlockCommands
-        ? adapter.unlockCommands.map((c) => Buffer.from(c))
-        : [Buffer.from(adapter.unlockCommand)];
+      const hasMultiple = adapter.unlockCommands && adapter.unlockCommands.length > 0;
+      const hasSingle = adapter.unlockCommand && adapter.unlockCommand.length > 0;
+      if (!hasMultiple && !hasSingle) return; // no legacy unlock to send
+
+      const commands = hasMultiple
+        ? adapter.unlockCommands!.map((c) => Buffer.from(c))
+        : [Buffer.from(adapter.unlockCommand!)];
       const sendUnlock = async (): Promise<void> => {
         if (isResolved()) return;
         for (const buf of commands) {
@@ -186,7 +218,11 @@ function initializeAdapter(
       };
 
       sendUnlock();
-      unlockInterval = setInterval(() => void sendUnlock(), adapter.unlockIntervalMs);
+      // The `?? 5000` is a defensive default for the impossible-in-practice
+      // case of unlockCommands set without unlockIntervalMs; every real adapter
+      // that keeps Unlockable declares both. 5000 ms mirrors the predominant
+      // existing interval.
+      unlockInterval = setInterval(() => void sendUnlock(), adapter.unlockIntervalMs ?? 5000);
     }
   };
 
@@ -241,9 +277,9 @@ async function subscribeAndInit(
   } else {
     // Legacy mode — single notify + write pair
     bleLog.debug(
-      `Looking for notify=${adapter.charNotifyUuid}` +
+      `Looking for notify=${adapter.charNotifyUuid ?? '<none>'}` +
         (adapter.altCharNotifyUuid ? ` (alt=${adapter.altCharNotifyUuid})` : '') +
-        `, write=${adapter.charWriteUuid}` +
+        `, write=${adapter.charWriteUuid ?? '<none>'}` +
         (adapter.altCharWriteUuid ? ` (alt=${adapter.altCharWriteUuid})` : ''),
     );
 
@@ -257,14 +293,14 @@ async function subscribeAndInit(
     if (!notifyChar || !writeChar) {
       throw new Error(
         `Required characteristics not found. ` +
-          `Notify (${adapter.charNotifyUuid}): ${!!notifyChar}, ` +
-          `Write (${adapter.charWriteUuid}): ${!!writeChar}. ` +
+          `Notify (${adapter.charNotifyUuid ?? '<none>'}): ${!!notifyChar}, ` +
+          `Write (${adapter.charWriteUuid ?? '<none>'}): ${!!writeChar}. ` +
           `Discovered: [${[...charMap.keys()].join(', ')}]`,
       );
     }
 
-    const effectiveNotifyUuid = resolveChar(charMap, adapter.charNotifyUuid)
-      ? adapter.charNotifyUuid
+    const effectiveNotifyUuid: string = resolveChar(charMap, adapter.charNotifyUuid)
+      ? adapter.charNotifyUuid!
       : adapter.altCharNotifyUuid!;
     // Legacy mode — subscribe + first unlock in parallel to prevent
     // the scale from disconnecting before receiving the unlock command
@@ -327,30 +363,23 @@ export function waitForRawReading(
 ): Promise<RawReading> {
   return new Promise<RawReading>((resolve, reject) => {
     let resolved = false;
-    const history: ScaleReading[] = [];
-    let historyCapWarned = false;
-
-    let holdTimer: ReturnType<typeof setTimeout> | null = null;
-    let heldReading: ScaleReading | null = null;
-    const clearHold = (): void => {
-      if (holdTimer) {
-        clearTimeout(holdTimer);
-        holdTimer = null;
-      }
-    };
-
-    const ackWriteChar =
-      resolveChar(charMap, adapter.charWriteUuid) ??
-      (adapter.altCharWriteUuid ? resolveChar(charMap, adapter.altCharWriteUuid) : undefined);
+    const history = new HistoryBuffer(MAX_HISTORY_FRAMES, adapter.name);
+    const ackWriteChar = resolveWriteChar(charMap, adapter);
 
     const finishWith = (r: ScaleReading): void => {
       resolved = true;
-      clearHold();
+      hold.clear();
       init.cleanup();
       process.stdout.write('\r' + ' '.repeat(80) + '\r');
       bleLog.info(`Reading complete: ${r.weight.toFixed(2)} kg / ${r.impedance} Ohm`);
-      resolve({ reading: r, adapter, history: history.length > 0 ? history.slice() : undefined });
+      resolve({ reading: r, adapter, history: history.snapshot() });
     };
+
+    // Armed only for adapters with completionHoldMs; the hold() call below is
+    // gated on it, so a 0 ms timer is never started for other adapters.
+    const hold = new HoldTimer(adapter.completionHoldMs ?? 0, (r) => {
+      if (!resolved) finishWith(r);
+    });
 
     const handleNotification = (sourceUuid: string, data: Buffer): void => {
       if (resolved) return;
@@ -378,40 +407,19 @@ export function waitForRawReading(
 
       if (reading.timestamp) {
         if (!adapter.isComplete(reading)) return;
-        if (history.length >= MAX_HISTORY_FRAMES) {
-          if (!historyCapWarned) {
-            bleLog.warn(
-              `Cached frame buffer hit ${MAX_HISTORY_FRAMES}, dropping further historical readings ` +
-                `from ${adapter.name}. Misbehaving scale or runaway cache replay?`,
-            );
-            historyCapWarned = true;
-          }
-          return;
+        if (history.push(reading)) {
+          bleLog.debug(
+            `Historical reading buffered: ${reading.weight.toFixed(2)} kg / ` +
+              `${reading.impedance} Ohm @ ${reading.timestamp.toISOString()}`,
+          );
         }
-        history.push(reading);
-        bleLog.debug(
-          `Historical reading buffered: ${reading.weight.toFixed(2)} kg / ` +
-            `${reading.impedance} Ohm @ ${reading.timestamp.toISOString()}`,
-        );
         return;
       }
 
       if (adapter.isComplete(reading)) {
         const final = adapter.isFinal ? adapter.isFinal(reading) : true;
         if (adapter.completionHoldMs && !final) {
-          heldReading = reading;
-          if (!holdTimer) {
-            bleLog.info(
-              `Weight stable; holding connection up to ` +
-                `${Math.round(adapter.completionHoldMs / 1000)}s for body composition...`,
-            );
-            holdTimer = setTimeout(() => {
-              if (resolved) return;
-              const r = heldReading;
-              if (!r) return;
-              finishWith(r);
-            }, adapter.completionHoldMs);
-          }
+          hold.hold(reading);
           return;
         }
         finishWith(reading);
@@ -432,25 +440,22 @@ export function waitForRawReading(
 
     bleDevice.onDisconnect(() => {
       if (resolved) return;
-      clearHold();
+      hold.clear();
       if (history.length > 0) {
         resolved = true;
         init.cleanup();
-        const latest = history.pop()!;
+        const latest = history.popLatest()!;
         process.stdout.write('\r' + ' '.repeat(80) + '\r');
         bleLog.info(
           `Disconnected after cache replay (${history.length + 1} historical reading(s)); ` +
             `no live frame.`,
         );
-        resolve({
-          reading: latest,
-          adapter,
-          history: history.length > 0 ? history.slice() : undefined,
-        });
+        resolve({ reading: latest, adapter, history: history.snapshot() });
         return;
       }
-      if (heldReading) {
-        finishWith(heldReading);
+      const held = hold.heldReading;
+      if (held) {
+        finishWith(held);
         return;
       }
       init.cleanup();

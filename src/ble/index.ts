@@ -1,10 +1,19 @@
-import type { ScaleAdapter, BodyComposition } from '../interfaces/scale-adapter.js';
+import type {
+  ScaleAdapter,
+  BodyComposition,
+  UserProfile,
+  ScaleAuth,
+} from '../interfaces/scale-adapter.js';
+import type { MqttProxyConfig, EsphomeProxyConfig } from '../config/schema.js';
 import type { ScanOptions, ScanResult, BleHandlerName } from './types.js';
 import type { RawReading } from './shared.js';
+import type { Watcher } from './reading-source.js';
 import { bleLog } from './types.js';
+import { ReadingWatcher } from './handler-mqtt-proxy/index.js';
 
 export type { ScanOptions, ScanResult } from './types.js';
 export type { RawReading } from './shared.js';
+export type { Watcher, WatcherConfig } from './reading-source.js';
 
 type NobleDriver = 'abandonware' | 'stoprocent';
 
@@ -89,7 +98,60 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
   return handler.scanAndReadRaw(opts);
 }
 
-export { ReadingWatcher } from './handler-mqtt-proxy/index.js';
+export { ReadingWatcher };
+
+/** Inputs for {@link createReadingSource}; primitives only (no runtime ctx). */
+export interface ReadingSourceOptions {
+  bleHandler?: BleHandlerName;
+  mqttProxy?: MqttProxyConfig;
+  esphomeProxy?: EsphomeProxyConfig;
+  adapters: ScaleAdapter[];
+  targetMac?: string;
+  profile: UserProfile;
+  scaleAuth?: ScaleAuth;
+}
+
+/**
+ * Result of {@link createReadingSource}. The proxy transports return a ready
+ * `watcher` (an event-driven {@link Watcher}); native transports return a `poll`
+ * plan and the orchestrator builds the poll source itself (it needs the runtime
+ * AppContext). `appliesGraceFloor` is the #143 BlueZ post-disconnect grace floor,
+ * true only for node-ble.
+ */
+export type ReadingSourcePlan =
+  | { kind: 'watcher'; watcher: Watcher; failureLogPrefix: string }
+  | { kind: 'poll'; appliesGraceFloor: boolean };
+
+/**
+ * Single factory that owns transport selection for the continuous loop (#246).
+ * Returns a watcher for the proxy transports (mqtt-proxy, esphome-proxy) or a
+ * poll plan for the native ones, using the same `resolveHandlerKey` precedence
+ * as the read-and-compute paths. The orchestrator never branches on handler
+ * name. esphome's watcher stays a dynamic import so its deps load only on use.
+ */
+export async function createReadingSource(opts: ReadingSourceOptions): Promise<ReadingSourcePlan> {
+  const key = resolveHandlerKey(opts.bleHandler);
+
+  if (key === 'mqtt-proxy' && opts.mqttProxy) {
+    const watcher = new ReadingWatcher(opts.mqttProxy, opts.adapters, opts.targetMac, opts.profile);
+    return { kind: 'watcher', watcher, failureLogPrefix: 'Error processing reading' };
+  }
+
+  if (key === 'esphome-proxy' && opts.esphomeProxy) {
+    const { ReadingWatcher: EsphomeReadingWatcher } =
+      await import('./handler-esphome-proxy/index.js');
+    const watcher = new EsphomeReadingWatcher(
+      opts.esphomeProxy,
+      opts.adapters,
+      opts.targetMac,
+      opts.profile,
+      opts.scaleAuth,
+    );
+    return { kind: 'watcher', watcher, failureLogPrefix: 'Error processing ESPHome reading' };
+  }
+
+  return { kind: 'poll', appliesGraceFloor: key === 'node-ble' };
+}
 
 /**
  * Scan for a BLE scale, read weight + impedance, and compute body composition.

@@ -1,11 +1,15 @@
 import { computeBiaFat, buildPayload, uuid16 } from './body-comp-helpers.js';
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
+import type { MatchDescriptor } from './match-descriptor.js';
+import { isGenericExcludedName } from './derived-excludes.js';
 
 // Standard BT SIG characteristic UUIDs
 const CHR_BODY_COMP_MEAS = uuid16(0x2a9c);
@@ -14,61 +18,6 @@ const CHR_USER_CONTROL_POINT = uuid16(0x2a9f);
 // Service short-form UUIDs (as noble may advertise them)
 const SVC_BODY_COMP_SHORT = '181b';
 const SVC_WEIGHT_SHORT = '181d';
-
-/** Device names handled by other specific adapters — excluded from matching. */
-const EXCLUDED = [
-  'qn-scale',
-  'renpho',
-  'senssun',
-  'sencor',
-  'yunmai',
-  'mibcs',
-  'mibfs',
-  'mi_scale',
-  'mi scale',
-  'es-26bb',
-  'es-cs20m',
-  'es-32md',
-  '113360_',
-  'mengii',
-  'yunchen',
-  'vscale',
-  'electronic scale',
-  '1byone scale',
-  'health scale',
-  't9120',
-  't9146',
-  't9147',
-  'ae bs-06',
-  'hoffen',
-  'swan',
-  'icomon',
-  'shape200',
-  'shape100',
-  'shape50',
-  'style100',
-  '01257b',
-  '11257b',
-  '000fatscale',
-  '042fatscale',
-  'bf-700',
-  'bf-800',
-  'rt-libra',
-  'libra-b',
-  'libra-w',
-  'bf700',
-  'bf710',
-  'sbf70',
-  'sbf72',
-  'sbf73',
-  'sbf75',
-  'bf915',
-  'aicdscale',
-  '013197',
-  '013198',
-  '0202b6',
-  '0203b',
-];
 
 /** Known brand / model substrings for standard-GATT body-composition scales.
  *  Only models NOT handled by specific adapters should be listed here. */
@@ -101,8 +50,26 @@ interface CachedGattData {
  * Parses the standard GATT flags for unit detection, body fat, impedance,
  * weight, water mass, and muscle percentage.
  */
-export class StandardGattScaleAdapter implements ScaleAdapter {
+export class StandardGattScaleAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Standard GATT (BCS/WSS)';
+  readonly match: MatchDescriptor = {
+    priority: 0,
+    custom: true,
+    names: {
+      includes: [
+        'beurer',
+        'silvercrest',
+        'bf105',
+        'bf720',
+        'bf950',
+        'bf500',
+        'bf600',
+        'bf850',
+        'medisana',
+      ],
+    },
+    serviceUuids: ['181b', '181d'],
+  };
   readonly charNotifyUuid = CHR_BODY_COMP_MEAS;
   readonly charWriteUuid = CHR_USER_CONTROL_POINT;
   readonly normalizesWeight = true;
@@ -114,7 +81,7 @@ export class StandardGattScaleAdapter implements ScaleAdapter {
 
   matches(device: BleDeviceInfo): boolean {
     const name = (device.localName || '').toLowerCase();
-    if (EXCLUDED.some((e) => name.includes(e))) return false;
+    if (name && isGenericExcludedName(name)) return false;
 
     const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
     const hasBcs = uuids.some((u) => u === SVC_BODY_COMP_SHORT || u === uuid16(0x181b));

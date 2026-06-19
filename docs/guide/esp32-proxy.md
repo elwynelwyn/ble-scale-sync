@@ -63,6 +63,15 @@ The board is auto-detected from the chip family. Set `"board"` in `config.json` 
 Broadcast-only scales (the reading is in the advertisement) work on every board listed above. GATT-connect scales, which need an active connection (e.g. QN Scale / Renpho ES-CS20M, Yunmai, Inlife, some Eufy), are RAM-heavy: the BLE stack allocates the connection from the ESP-IDF heap, which is separate from the MicroPython heap. On a no-PSRAM board (classic ESP-WROOM-32, Atom Echo) that heap can run out while WiFi and MQTT are active, so the connect times out or the board reboots. For GATT-connect scales use a board with PSRAM (ESP32-S3-DevKitC, Guition). Both classic ESP32 and S3 share one 2.4 GHz radio via time-division coexistence; the S3 advantage here is RAM, not the radio.
 :::
 
+### Scale type vs board support
+
+| Scale type                                       | Example scales                            | No-PSRAM classic ESP32 (WROOM-32, Atom Echo, ESP-32D) | ESP32-S3 / PSRAM (S3-DevKitC, Guition) |
+| ------------------------------------------------ | ----------------------------------------- | ----------------------------------------------------- | -------------------------------------- |
+| Broadcast-only (reading is in the advertisement) | Mi Scale 2, Xiaomi S800                   | Reliable                                              | Reliable                               |
+| GATT-connect (needs an active connection)        | Yunmai, Inlife, Eufy T9120, QN / ES-CS20M | Not supported, clean skip                             | Supported                              |
+
+A no-PSRAM classic ESP32 is a reliable broadcast-only proxy. For GATT-connect scales use an ESP32-S3 / PSRAM board, because the BLE central connection plus GATT discovery needs kilobytes of ESP-IDF internal heap that WiFi-STA plus NimBLE plus the MicroPython GC heap leave near zero on a no-PSRAM board (the steady-state largest contiguous block is about 336 bytes with WiFi up).
+
 ![Guition 4848 display showing scan status and user results](../images/esp32-display.png)
 
 ::: warning Not compatible
@@ -384,16 +393,26 @@ Boards without PSRAM have ~100 KB free after boot. If you see `MemoryError`:
 
 ### GATT connect times out or the ESP32 reboots (classic ESP32 / no PSRAM)
 
-A GATT-connect scale (one that needs an active connection, not just a broadcast) can make a no-PSRAM board time out on connect, or crash and reboot with a NimBLE error like `assertion:semaphor->handle / npl_freertos_sem_init` (Guru Meditation). The cause is the ESP-IDF heap running out: the BLE stack allocates the connection from that heap (separate from the MicroPython heap), and WiFi + MQTT leave little room on a classic ESP32 / Atom Echo. The crash is a C-level assertion inside the BLE stack, so it cannot be caught from Python; it can only be avoided by leaving enough free heap.
+A GATT-connect scale (one that needs an active connection, not just a broadcast) can make a no-PSRAM board time out on connect. The cause is the ESP-IDF heap running out: the BLE stack allocates the connection from that heap (separate from the MicroPython heap), and WiFi + MQTT leave little room on a classic ESP32 / Atom Echo.
 
-The firmware mitigates this by freeing memory right before connecting and, on no-PSRAM boards, using a shorter connect window with a retry. It also prints the heap headroom over serial just before each connect:
+As of this release the firmware no longer reboots on a near-empty ESP-IDF heap. It reads the heap right before connecting, and when it is too low it refuses the connect, prints a clear line, keeps scanning, and reports an MQTT error to the host instead of crashing with the NimBLE semaphore assertion (`assertion:semaphor->handle / npl_freertos_sem_init`, Guru Meditation). The skip line looks like:
+
+```
+IDF heap too low for GATT connect: free=<bytes> largest=<bytes> (#139)
+```
+
+It still prints the heap headroom over serial just before each connect, which tells a RAM ceiling apart from radio contention:
 
 ```
 IDF heap before connect: free=<bytes> largest=<bytes>
 ```
 
-- A very small `largest` before a failed connect means you are out of RAM. Use a board with PSRAM (ESP32-S3-DevKitC, Guition) for GATT-connect scales.
+- A very small `largest` before a refused or failed connect means you are out of RAM. Use a board with PSRAM (ESP32-S3-DevKitC, Guition) for GATT-connect scales.
 - A healthy `largest` plus a timeout points at radio contention instead; move the board closer to the scale and retry.
+
+**Advanced: tuning the guard.** The guard ships with per-board tunables `CONNECT_MIN_IDF_LARGEST` and `CONNECT_MIN_IDF_FREE` set to `0`, so by default only an always-on conservative crash floor (about 1 KB largest, 2 KB free) is active. That floor only ever trips the pathological near-empty case and never refuses a connect that could have succeeded.
+
+To calibrate a higher floor: on a PSRAM board where a connect succeeds, temporarily log the IDF heap before connect and again after connect plus discovery, take the `(free_before - free_after)` delta and the post-connect largest block, then set `CONNECT_MIN_IDF_FREE` a little above the delta and `CONNECT_MIN_IDF_LARGEST` a little above the post-connect largest in that board's `board_*.py`. On a no-PSRAM board with WiFi up a non-zero tunable only ever produces a clean skip, never a successful connect, because `gc.collect()` cannot hand kilobytes back to the IDF heap.
 
 Broadcast-only scales are unaffected and work on every board.
 

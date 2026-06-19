@@ -1,16 +1,17 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, xorChecksum, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
-
-const ONEBYONE_NAMES = ['t9146', 't9147', 't9120', 'health scale'];
 
 /**
  * Adapter for Eufy C1/P1/A1 and "Health Scale" branded 1byone devices.
@@ -21,22 +22,19 @@ const ONEBYONE_NAMES = ['t9146', 't9147', 't9120', 'health scale'];
  *   Weight at bytes [3-4] little-endian uint16 / 100 (kg).
  *   Impedance: ((data[2]<<8)+data[1]) * 0.1, valid when byte[9] != 1 and != 0.
  */
-export class OneByoneAdapter implements ScaleAdapter {
+export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = '1byone (Eufy)';
+  readonly match: MatchDescriptor = {
+    priority: 70,
+    names: { includes: ['t9146', 't9147', 't9120', 'health scale'] },
+    charUuids: ['fff4'],
+  };
   readonly charNotifyUuid = uuid16(0xfff4);
   readonly charWriteUuid = uuid16(0xfff1);
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    if (ONEBYONE_NAMES.some((n) => name.includes(n))) return true;
-    // Post-discovery disambiguation of the shared 0xFFF0 vendor service: the
-    // 1byone/Eufy notify characteristic 0xFFF4 is unique to this family (Inlife
-    // never exposes it), so it identifies the device when the broadcast name is
-    // absent at connect time (e.g. BlueZ by-MAC). #177
-    return (device.characteristicUuids ?? []).includes(uuid16(0xfff4));
+    return matchesDescriptor(device, this.match);
   }
 
   /**
@@ -104,8 +102,12 @@ export class OneByoneAdapter implements ScaleAdapter {
  *     0x01 = impedance: bytes [4-5] big-endian uint16.
  *     0x00 with byte[7]=0x80 = history (ignored).
  */
-export class OneByoneNewAdapter implements ScaleAdapter {
+export class OneByoneNewAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = '1byone Scale (new)';
+  readonly match: MatchDescriptor = {
+    priority: 60,
+    names: { exact: ['1byone scale'] },
+  };
   readonly charNotifyUuid = uuid16(0xffb2);
   readonly charWriteUuid = uuid16(0xffb1);
   readonly normalizesWeight = true;
@@ -119,8 +121,7 @@ export class OneByoneNewAdapter implements ScaleAdapter {
   private cachedImpedance = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === '1byone scale';
+    return matchesDescriptor(device, this.match);
   }
 
   parseNotification(data: Buffer): ScaleReading | null {

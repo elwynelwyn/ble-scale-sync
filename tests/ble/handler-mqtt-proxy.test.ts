@@ -182,6 +182,32 @@ function createGattAdapter(name = 'GattScale'): ScaleAdapter {
 }
 
 /**
+ * Notify-kickoff adapter modeling the #231 QN/Renpho ES-CS20M failure mode: the
+ * scale emits its spontaneous 0x12 kickoff frame the instant its notify CCCD is
+ * written, with NO central-initiated write. No unlockCommand means legacy mode
+ * sends no write, so the ONLY way a frame can arrive in the test is the
+ * host-ordered subscribe/<uuid> command driving the firmware notify enable.
+ */
+function createNotifyKickoffAdapter(name = 'KickoffScale'): ScaleAdapter {
+  let reading: ScaleReading | null = null;
+  return {
+    name,
+    charNotifyUuid: GATT_NOTIFY_UUID,
+    charWriteUuid: GATT_WRITE_UUID, // must exist for legacy resolution, but no unlock is sent
+    matches: vi.fn((info: BleDeviceInfo) => info.localName === name),
+    parseNotification: vi.fn((data: Buffer) => {
+      if (data.length >= 4) {
+        reading = { weight: data.readUInt16LE(0) / 100, impedance: data.readUInt16LE(2) };
+        return reading;
+      }
+      return null;
+    }),
+    isComplete: vi.fn(() => reading !== null && reading.impedance > 0),
+    computeMetrics: vi.fn(() => BODY_COMP),
+  };
+}
+
+/**
  * Dual-mode adapter analogous to the real QN Scale: declares `parseBroadcast`
  * (for the AABB broadcast variant) AND exposes a GATT notify/write path. A
  * matched device that carries no broadcast data must fall through to GATT
@@ -724,7 +750,7 @@ describe('handler-mqtt-proxy', () => {
 
       expect(mockClient.publishAsync).toHaveBeenCalledWith(
         `${PREFIX}/config`,
-        JSON.stringify({ scales: ['ED:67:39:4B:27:FC'] }),
+        JSON.stringify({ scales: ['ED:67:39:4B:27:FC'], lazy_notify: true }),
         { retain: true },
       );
       expect(mockClient.endAsync).toHaveBeenCalled();
@@ -735,7 +761,7 @@ describe('handler-mqtt-proxy', () => {
 
       expect(mockClient.publishAsync).toHaveBeenCalledWith(
         `${PREFIX}/config`,
-        JSON.stringify({ scales: [] }),
+        JSON.stringify({ scales: [], lazy_notify: true }),
         { retain: true },
       );
     });
@@ -745,7 +771,7 @@ describe('handler-mqtt-proxy', () => {
 
       expect(mockClient.publishAsync).toHaveBeenCalledWith(
         `${PREFIX}/config`,
-        JSON.stringify({ scales: ['AA:BB:CC:DD:EE:FF'], autoConnect: false }),
+        JSON.stringify({ scales: ['AA:BB:CC:DD:EE:FF'], autoConnect: false, lazy_notify: true }),
         { retain: true },
       );
     });
@@ -756,6 +782,15 @@ describe('handler-mqtt-proxy', () => {
       const payload = (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls[0][1];
       const parsed = JSON.parse(payload);
       expect(parsed).not.toHaveProperty('autoConnect');
+      expect(parsed.lazy_notify).toBe(true);
+    });
+
+    it('always advertises lazy_notify:true for #231 host-ordered notify', async () => {
+      await publishConfig(MQTT_PROXY_CONFIG, ['AA:BB:CC:DD:EE:FF']);
+      const payload = JSON.parse(
+        (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls[0][1] as string,
+      );
+      expect(payload.lazy_notify).toBe(true);
     });
   });
 
@@ -819,11 +854,13 @@ describe('handler-mqtt-proxy', () => {
       ];
       await publishConfig(MQTT_PROXY_CONFIG, ['AA:BB:CC:DD:EE:FF'], users);
 
-      expect(mockClient.publishAsync).toHaveBeenCalledWith(
-        `${PREFIX}/config`,
-        JSON.stringify({ scales: ['AA:BB:CC:DD:EE:FF'], users }),
-        { retain: true },
-      );
+      const call = (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(call[0]).toBe(`${PREFIX}/config`);
+      expect(call[2]).toEqual({ retain: true });
+      const parsed = JSON.parse(call[1] as string);
+      expect(parsed.scales).toEqual(['AA:BB:CC:DD:EE:FF']);
+      expect(parsed.users).toEqual(users);
+      expect(parsed.lazy_notify).toBe(true);
     });
 
     it('omits users key when users array is empty', async () => {
@@ -831,7 +868,7 @@ describe('handler-mqtt-proxy', () => {
 
       expect(mockClient.publishAsync).toHaveBeenCalledWith(
         `${PREFIX}/config`,
-        JSON.stringify({ scales: ['AA:BB:CC:DD:EE:FF'] }),
+        JSON.stringify({ scales: ['AA:BB:CC:DD:EE:FF'], lazy_notify: true }),
         { retain: true },
       );
     });
@@ -843,6 +880,7 @@ describe('handler-mqtt-proxy', () => {
         (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls[0][1] as string,
       );
       expect(payload).not.toHaveProperty('users');
+      expect(payload.lazy_notify).toBe(true);
     });
   });
 
@@ -1102,7 +1140,7 @@ describe('handler-mqtt-proxy', () => {
       await watcher.start();
 
       // Update to use adapter2
-      watcher.updateConfig([adapter2]);
+      watcher.updateConfig({ adapters: [adapter2] });
 
       mockClient._simulateMessage(
         `${PREFIX}/scan/results`,
@@ -2088,6 +2126,109 @@ describe('handler-mqtt-proxy', () => {
 
       // Never fell back to a host-initiated GATT connect.
       expect(hostConnects).toBe(0);
+    });
+
+    it('enables notify on subscribe command for a write-less kickoff scale (#231 host-ordered)', async () => {
+      // No unlockCommand on this fixture, so legacy mode sends NO write. The
+      // frame can ONLY arrive because the host published subscribe/<uuid> and
+      // the firmware enabled BLE notify in response. A regression that drops the
+      // command leaves nextReading() to time out -> the test fails loudly.
+      const adapter = createNotifyKickoffAdapter();
+      const watcher = new ReadingWatcher(MQTT_PROXY_CONFIG, [adapter], undefined, PROFILE);
+      await watcher.start();
+
+      // Record the order of subscribeAsync(notify) vs publishAsync(subscribe).
+      const order: string[] = [];
+      const origSub = mockClient.subscribeAsync;
+      mockClient.subscribeAsync = vi.fn(async (topic: string, opts?: unknown) => {
+        if (topic === `${PREFIX}/notify/${GATT_NOTIFY_UUID}`) order.push(`sub:${topic}`);
+        return origSub(topic, opts as never);
+      });
+      const origPublish = mockClient.publishAsync;
+      let writeSeen = false;
+      mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+        if (topic === `${PREFIX}/write/${GATT_WRITE_UUID}`) writeSeen = true;
+        if (topic === `${PREFIX}/subscribe/${GATT_NOTIFY_UUID}`) {
+          order.push(`pub:${topic}`);
+          // Firmware enables notify on the subscribe command, then the scale
+          // emits its spontaneous kickoff frame on notify/<uuid> (no host write).
+          queueMicrotask(() => {
+            const buf = Buffer.alloc(4);
+            buf.writeUInt16LE(7250, 0); // 72.50 kg
+            buf.writeUInt16LE(505, 2); // impedance 505
+            mockClient._simulateMessage(`${PREFIX}/notify/${GATT_NOTIFY_UUID}`, buf);
+          });
+        }
+        return origPublish(topic, payload);
+      });
+
+      mockClient._simulateMessage(
+        `${PREFIX}/connected`,
+        JSON.stringify({
+          autonomous: true,
+          address: 'AA:BB:CC:DD:EE:FF',
+          chars: [
+            { uuid: GATT_NOTIFY_UUID, properties: ['notify'] },
+            { uuid: GATT_WRITE_UUID, properties: ['write'] },
+          ],
+        }),
+      );
+
+      const raw = await watcher.nextReading();
+      expect(raw.reading.weight).toBe(72.5);
+      expect(raw.reading.impedance).toBe(505);
+      // The fixture sends no unlock, so no write was ever published. The frame
+      // could only have come from the subscribe-driven notify enable.
+      expect(writeSeen).toBe(false);
+
+      // The enable command MUST be published, and AFTER the notify subscription.
+      const subscribeCmds = (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c: unknown[]) => c[0] === `${PREFIX}/subscribe/${GATT_NOTIFY_UUID}`,
+      );
+      expect(subscribeCmds).toHaveLength(1);
+      const subIdx = order.indexOf(`sub:${PREFIX}/notify/${GATT_NOTIFY_UUID}`);
+      const pubIdx = order.indexOf(`pub:${PREFIX}/subscribe/${GATT_NOTIFY_UUID}`);
+      expect(subIdx).toBeGreaterThanOrEqual(0);
+      expect(pubIdx).toBeGreaterThan(subIdx);
+    });
+
+    it('does not publish a subscribe command for the write-only char (#231)', async () => {
+      // Only notify chars are subscribed via char.subscribe, so only their
+      // subscribe/<uuid> command is published. The write char is never subscribed.
+      const adapter = createGattAdapter();
+      const watcher = new ReadingWatcher(MQTT_PROXY_CONFIG, [adapter], undefined, PROFILE);
+      await watcher.start();
+
+      const origPublish = mockClient.publishAsync;
+      mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+        if (topic === `${PREFIX}/write/${GATT_WRITE_UUID}`) {
+          queueMicrotask(() => {
+            const buf = Buffer.alloc(4);
+            buf.writeUInt16LE(9100, 0);
+            buf.writeUInt16LE(515, 2);
+            mockClient._simulateMessage(`${PREFIX}/notify/${GATT_NOTIFY_UUID}`, buf);
+          });
+        }
+        return origPublish(topic, payload);
+      });
+
+      mockClient._simulateMessage(
+        `${PREFIX}/connected`,
+        JSON.stringify({
+          autonomous: true,
+          address: 'AA:BB:CC:DD:EE:FF',
+          chars: [
+            { uuid: GATT_NOTIFY_UUID, properties: ['notify'] },
+            { uuid: GATT_WRITE_UUID, properties: ['write'] },
+          ],
+        }),
+      );
+
+      await watcher.nextReading();
+      const writeSubscribeCmds = (
+        mockClient.publishAsync as ReturnType<typeof vi.fn>
+      ).mock.calls.filter((c: unknown[]) => c[0] === `${PREFIX}/subscribe/${GATT_WRITE_UUID}`);
+      expect(writeSubscribeCmds).toHaveLength(0);
     });
   });
 });

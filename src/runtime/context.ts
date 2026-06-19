@@ -28,6 +28,15 @@ export interface AppContext {
   readonly signal: AbortSignal;
   readonly exporterCache: Map<string, Exporter[]>;
 
+  /**
+   * Per-user runtime anchor of the last successfully-exported weight, keyed by
+   * user slug. Single-user mode uses this (not config) as its #164 replay-dedup
+   * anchor, since it never writes last_known_weight. Survives config reload (it
+   * is process-lifetime dedup state, NOT a hot-swap field), so setConfig must
+   * not clear it.
+   */
+  readonly lastExportedWeights: Map<string, number>;
+
   // Lifecycle handle (mqtt-proxy only; set after bootstrapMqttProxy)
   embeddedBroker: EmbeddedBrokerHandle | null;
 
@@ -70,6 +79,7 @@ export function createAppContext(init: AppContextInit): AppContext {
     esphomeProxy: init.resolved.esphomeProxy,
     signal: init.signal,
     exporterCache: new Map(),
+    lastExportedWeights: new Map(),
 
     embeddedBroker: null,
 

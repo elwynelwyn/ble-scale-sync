@@ -1,4 +1,5 @@
 import type { ScaleAdapter, BleDeviceInfo } from '../../interfaces/scale-adapter.js';
+import { resolveAdapter } from '../../scales/resolve.js';
 import {
   bleLog,
   formatMac,
@@ -206,7 +207,7 @@ export async function autoDiscover(
         // Try matching with name only (serviceUuids not available pre-connect on D-Bus).
         // Adapters that require serviceUuids will fail to match here and need SCALE_MAC.
         const info: BleDeviceInfo = { localName: name, serviceUuids: [] };
-        const matched = adapters.find((a) => a.matches(info));
+        const matched = resolveAdapter(info, adapters);
         if (matched) {
           bleLog.info(`Auto-discovered: ${matched.name} (${name} [${addr}])`);
           return { device: dev, adapter: matched, mac: addr };

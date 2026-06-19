@@ -1,11 +1,14 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { buildPayload, estimateBodyFat, uuid16 } from './body-comp-helpers.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 // Yunmai GATT service / characteristic UUIDs
 const CHR_MEAS = uuid16(0xffe4); // notify — measurement data
@@ -27,8 +30,13 @@ const RESP_MEASURED = 0x02;
  *
  * Body-composition formulas ported from openScale's YunmaiLib.
  */
-export class YunmaiScaleAdapter implements ScaleAdapter {
+export class YunmaiScaleAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Yunmai';
+  readonly match: MatchDescriptor = {
+    priority: 190,
+    custom: true,
+    names: { includes: ['yunmai'] },
+  };
   readonly charNotifyUuid = CHR_MEAS;
   readonly charWriteUuid = CHR_CMD;
   readonly normalizesWeight = true;

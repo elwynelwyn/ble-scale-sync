@@ -1,7 +1,7 @@
 import type { RawReading } from '../ble/shared.js';
 import type { Exporter, ExportContext } from '../interfaces/exporter.js';
 import type { BodyComposition, ScaleReading } from '../interfaces/scale-adapter.js';
-import type { WeightUnit } from '../config/schema.js';
+import type { WeightUnit, UserConfig } from '../config/schema.js';
 import type { AppContext } from './context.js';
 import { resolveUserProfile } from '../config/resolve.js';
 import { matchUserByWeight, detectWeightDrift } from '../config/user-matching.js';
@@ -78,50 +78,97 @@ export async function processReading(
   return processSingleUser(ctx, raw, opts.singleUserExporters);
 }
 
-async function processSingleUser(
+/** Per-frame policy that distinguishes the two user-count modes. */
+interface FramePolicy {
+  /** Log prefix: '' for single-user, '[Name]' for multi-user. */
+  prefix: string;
+  /** Drift warning attached to the last reading's ExportContext (multi only). */
+  drift?: string;
+  /**
+   * Replay-dedup anchor: multi-user passes `last_known_weight` (config); single-
+   * user passes its runtime last-exported weight. `null` disables dedup.
+   */
+  dedupAnchor: number | null;
+}
+
+/** Combine the user prefix and the historic tag into the per-frame log tag. */
+function frameTag(prefix: string, timestamp: Date | undefined): string {
+  const ht = historicTag(timestamp);
+  if (prefix && ht) return `${prefix} ${ht}`;
+  return prefix || ht;
+}
+
+/**
+ * Shared expand -> compute -> log -> display -> dispatch core for one matched
+ * user. Both single- and multi-user modes run this; they differ only in the
+ * policy (prefix, drift, dedup anchor) and the surrounding side effects (weight
+ * matching, beeps, last_known_weight write). Callers must have already fired
+ * `checkAndLogUpdate` for the cycle.
+ *
+ * Returns the success of the last (live) dispatch and the payload of that
+ * dispatch (`null` if every frame was deduped or skipped via dry-run), which the
+ * caller uses to gate the dedup-anchor / last_known_weight write.
+ */
+async function processReadingFrames(
   ctx: AppContext,
+  user: UserConfig,
   raw: RawReading,
+  all: ScaleReading[],
   exporters: Exporter[] | undefined,
-): Promise<boolean> {
-  const user = ctx.config.users[0];
+  policy: FramePolicy,
+): Promise<{ lastSuccess: boolean; latestPayload: BodyComposition | null }> {
   const profile = resolveUserProfile(user, ctx.config.scale);
-  const all = expandReadings(raw);
+  // Dry-run signal is unified: ctx.dryRun OR (single-user) undefined exporters.
+  // An empty exporter array is NOT a skip — it dispatches to nothing and reports
+  // success, matching the prior multi-user behaviour.
+  const skipExport = ctx.dryRun || exporters === undefined;
 
-  // Historical-replay dedup runs in multi-user mode only. Single-user mode
-  // does not write last_known_weight, so there is no anchor to dedup against;
-  // cache replay re-exports every cached frame on each restart until the
-  // scale clears its own cache via the per-adapter offline ack.
   let lastSuccess = true;
-
-  // Log dry-run notice once per cycle, not once per replayed frame.
-  if (!exporters) log.info('\nDry run. Skipping export.');
+  let latestPayload: BodyComposition | null = null;
 
   for (let i = 0; i < all.length; i++) {
     const reading = all[i];
     const isLast = i === all.length - 1;
+    const tag = frameTag(policy.prefix, reading.timestamp);
+    const tagPrefix = tag ? `${tag} ` : '';
+
+    // Replay dedup: skip a historical frame whose weight matches the anchor
+    // within tolerance (likely a re-export of an already-synced measurement).
+    if (
+      reading.timestamp &&
+      policy.dedupAnchor !== null &&
+      Math.abs(reading.weight - policy.dedupAnchor) < DEDUP_KG_TOLERANCE
+    ) {
+      log.info(
+        `${tagPrefix}Skipping replay: weight ${fmtWeight(reading.weight, ctx.weightUnit)} ` +
+          `matches the last exported weight within +/-${DEDUP_KG_TOLERANCE} kg`,
+      );
+      continue;
+    }
+
     const payload = raw.adapter.computeMetrics(reading, profile);
 
-    const tag = historicTag(reading.timestamp);
-    const tagPrefix = tag ? `${tag} ` : '';
     log.info(
-      `\n${tagPrefix}Measurement received: ${fmtWeight(payload.weight, ctx.weightUnit)} / ${payload.impedance} Ohm`,
+      `\n${tagPrefix}Measurement: ${fmtWeight(payload.weight, ctx.weightUnit)} / ${payload.impedance} Ohm`,
     );
     logBodyComp(payload, ctx.weightUnit, tag);
 
-    if (isLast) checkAndLogUpdate(ctx.config.update_check);
+    if (skipExport) {
+      log.info(`${tagPrefix}Dry run. Skipping export.`);
+      continue;
+    }
 
-    if (!exporters) continue;
+    if (isLast) latestPayload = payload;
 
     if (isLast) {
-      // notifyReading uses raw scale values (pre-computeMetrics); the
-      // display should mirror what the scale measured, not the computed
-      // body composition. notifyResult below uses the computed payload.
+      // notifyReading uses raw scale values (pre-computeMetrics) so the display
+      // mirrors what the scale measured; notifyResult uses the computed payload.
       ctx.display?.reading(
         user.slug,
         user.name,
         reading.weight,
         reading.impedance,
-        exporters.map((e) => e.name),
+        exporters!.map((e) => e.name),
       );
     }
 
@@ -129,15 +176,51 @@ async function processSingleUser(
       userName: user.name,
       userSlug: user.slug,
       userConfig: user,
+      ...(policy.drift && isLast ? { driftWarning: policy.drift } : {}),
       ...(reading.timestamp ? { timestamp: reading.timestamp } : {}),
     };
 
-    const { success, details } = await dispatchExports(exporters, payload, context);
+    const { success, details } = await dispatchExports(exporters!, payload, context);
 
     if (isLast) {
       ctx.display?.result(user.slug, user.name, payload.weight, details);
       lastSuccess = success;
     }
+  }
+
+  return { lastSuccess, latestPayload };
+}
+
+async function processSingleUser(
+  ctx: AppContext,
+  raw: RawReading,
+  exporters: Exporter[] | undefined,
+): Promise<boolean> {
+  const user = ctx.config.users[0];
+  const all = expandReadings(raw);
+
+  checkAndLogUpdate(ctx.config.update_check);
+
+  // Single-user replay dedup uses a RUNTIME anchor (not config): the last weight
+  // we actually exported this process. Null on the first reading (no dedup),
+  // then set below, so a later reconnect's cache replay dedups against it. This
+  // makes #164 replay dedup uniform with multi-user within a process lifetime.
+  const anchor = ctx.lastExportedWeights.get(user.slug) ?? null;
+
+  const { lastSuccess, latestPayload } = await processReadingFrames(
+    ctx,
+    user,
+    raw,
+    all,
+    exporters,
+    {
+      prefix: '',
+      dedupAnchor: anchor,
+    },
+  );
+
+  if (latestPayload) {
+    ctx.lastExportedWeights.set(user.slug, all[all.length - 1].weight);
   }
 
   return lastSuccess;
@@ -182,73 +265,20 @@ async function processMultiUser(
   const drift = detectWeightDrift(user, matchWeight);
   if (drift) log.warn(`${prefix} ${drift}`);
 
-  const profile = resolveUserProfile(user, ctx.config.scale);
   const previousLastKnown = user.last_known_weight;
 
-  let lastSuccess = true;
-  let latestPayload: BodyComposition | null = null;
-
-  for (let i = 0; i < all.length; i++) {
-    const reading = all[i];
-    const isLast = i === all.length - 1;
-    const ht = historicTag(reading.timestamp);
-    const tag = ht ? `${prefix} ${ht}` : prefix;
-
-    // Replay dedup: skip historical readings whose weight matches the previously-known
-    // weight within tolerance (likely a re-export of an already-synced measurement).
-    if (
-      reading.timestamp &&
-      previousLastKnown !== null &&
-      Math.abs(reading.weight - previousLastKnown) < DEDUP_KG_TOLERANCE
-    ) {
-      log.info(
-        `${tag} Skipping replay: weight ${fmtWeight(reading.weight, ctx.weightUnit)} ` +
-          `matches last_known_weight within +/-${DEDUP_KG_TOLERANCE} kg`,
-      );
-      continue;
-    }
-
-    const payload = raw.adapter.computeMetrics(reading, profile);
-
-    log.info(
-      `${tag} Measurement: ${fmtWeight(payload.weight, ctx.weightUnit)} / ${payload.impedance} Ohm`,
-    );
-    logBodyComp(payload, ctx.weightUnit, tag);
-
-    if (ctx.dryRun) {
-      log.info(`${tag} Dry run. Skipping export.`);
-      continue;
-    }
-
-    if (isLast) latestPayload = payload;
-
-    if (isLast) {
-      // notifyReading uses raw values (pre-computeMetrics) so the display
-      // shows what the scale measured; notifyResult uses computed payload.
-      ctx.display?.reading(
-        user.slug,
-        user.name,
-        reading.weight,
-        reading.impedance,
-        exporters.map((e) => e.name),
-      );
-    }
-
-    const context: ExportContext = {
-      userName: user.name,
-      userSlug: user.slug,
-      userConfig: user,
-      ...(drift && isLast ? { driftWarning: drift } : {}),
-      ...(reading.timestamp ? { timestamp: reading.timestamp } : {}),
-    };
-
-    const { success, details } = await dispatchExports(exporters, payload, context);
-
-    if (isLast) {
-      ctx.display?.result(user.slug, user.name, payload.weight, details);
-      lastSuccess = success;
-    }
-  }
+  const { lastSuccess, latestPayload } = await processReadingFrames(
+    ctx,
+    user,
+    raw,
+    all,
+    exporters,
+    {
+      prefix,
+      drift: drift ?? undefined,
+      dedupAnchor: previousLastKnown,
+    },
+  );
 
   // last_known_weight stores the raw scale value, not the computed payload.
   // latestPayload is set only after a non-dry export on the last reading,

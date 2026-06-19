@@ -2,13 +2,16 @@ import type {
   BleDeviceInfo,
   CharacteristicBinding,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  MultiCharNotify,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
 import { bleLog } from '../ble/types.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 // ─── Beurer SIG-standard adapter (BF720, BF105) ─────────────────────────────
 
@@ -66,14 +69,19 @@ interface CachedComp {
  * Protocol decoded from an openScale HCI snoop (#168) and cross-checked
  * against openScale's StandardWeightProfileHandler.
  */
-export class BeurerBf720Adapter implements ScaleAdapter {
+export class BeurerBf720Adapter implements ScaleAdapterCore, GattWiring, MultiCharNotify {
   readonly name = 'Beurer BF720/BF105';
+  readonly match: MatchDescriptor = {
+    priority: 220,
+    custom: true,
+    names: { includes: ['bf720', 'bf105'] },
+    serviceUuids: ['181d', '181b'],
+    manufacturerId: 0x0611,
+  };
   // Legacy single-char fallback (unused in multi-char mode).
   readonly charNotifyUuid = CHR_WEIGHT_MEASUREMENT;
   readonly charWriteUuid = CHR_CURRENT_TIME;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
   // SIG User Data Service (0x181C) CCCD writes need an encrypted link; the
   // node-ble handler attempts a best-effort bond before subscribing. #168
   readonly requiresBonding = true;

@@ -1,17 +1,17 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 const CHR_NOTIFY = uuid16(0x8a21);
 const CHR_WRITE = uuid16(0x8a81);
-
-const EXACT_NAMES = ['013197', '013198', '0202b6'];
 
 /**
  * Adapter for Medisana BS44x / BS440 BLE body-composition scales.
@@ -24,14 +24,17 @@ const EXACT_NAMES = ['013197', '013198', '0202b6'];
  *     - Feature frame (>= 16 bytes): fat, water, muscle, bone at various offsets
  *   - Values cached across frames; complete when weight > 0 and fat > 0
  */
-export class MedisanaBs44xAdapter implements ScaleAdapter {
+export class MedisanaBs44xAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = 'Medisana BS44x';
+  readonly match: MatchDescriptor = {
+    priority: 150,
+    names: { exact: ['013197', '013198', '0202b6'], startsWith: ['0203b'] },
+    serviceUuids: ['78b2'],
+  };
   readonly charNotifyUuid = CHR_NOTIFY;
   readonly charWriteUuid = CHR_WRITE;
 
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   /** Cached weight from weight frames. */
   private cachedWeight = 0;
@@ -49,14 +52,7 @@ export class MedisanaBs44xAdapter implements ScaleAdapter {
   }
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-
-    if (EXACT_NAMES.includes(name)) return true;
-    if (name.startsWith('0203b')) return true;
-
-    const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
-    const svcFull = uuid16(0x78b2);
-    return uuids.includes('78b2') || uuids.includes(svcFull);
+    return matchesDescriptor(device, this.match);
   }
 
   /**

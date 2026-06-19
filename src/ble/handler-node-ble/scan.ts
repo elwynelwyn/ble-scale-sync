@@ -7,6 +7,7 @@ import type {
 import type { ScanOptions, ScanResult } from '../types.js';
 import type { RawReading } from '../shared.js';
 import { waitForRawReading, findMissingCharacteristics } from '../shared.js';
+import { resolveAdapter } from '../../scales/resolve.js';
 import {
   bleLog,
   normalizeUuid,
@@ -216,7 +217,7 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
       // adapter, add a `passiveServiceUuids: string[]` hint to ScaleAdapter and check
       // it here against the advertised UUIDs from BlueZ ServiceData.
       const preInfo: BleDeviceInfo = { localName: name, serviceUuids: [] };
-      const preMatchedAdapter = adapters.find((a) => a.matches(preInfo));
+      const preMatchedAdapter = resolveAdapter(preInfo, adapters);
 
       if (preMatchedAdapter?.preferPassive && preMatchedAdapter.parseServiceData) {
         matchedAdapter = preMatchedAdapter;
@@ -263,7 +264,7 @@ export async function scanAndReadRaw(opts: ScanOptions): Promise<RawReading> {
           serviceUuids: serviceUuids.map(normalizeUuid),
           characteristicUuids: [...matchCharMap.keys()],
         };
-        resolved = adapters.find((a) => a.matches(info));
+        resolved = resolveAdapter(info, adapters);
         if (resolved || attempt === CHAR_DISCOVERY_MAX_RETRIES) break;
         await sleep(CHAR_DISCOVERY_RETRY_DELAY_MS);
         matchCharMap = await withTimeout(
@@ -516,7 +517,7 @@ export async function scanDevices(
           const dev = await btAdapter.getDevice(addr);
           const name = await dev.getName().catch(() => '(unknown)');
           const info: BleDeviceInfo = { localName: name, serviceUuids: [] };
-          const matched = adapters.find((a) => a.matches(info));
+          const matched = resolveAdapter(info, adapters);
 
           results.push({
             address: addr,

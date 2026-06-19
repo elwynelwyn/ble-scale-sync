@@ -1,12 +1,14 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, xorChecksum, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 /**
  * Adapter for the Hoffen BS-8107 body-fat scale.
@@ -22,13 +24,12 @@ import { uuid16, buildPayload, xorChecksum, type ScaleBodyComp } from './body-co
  *     muscle at [10-11] LE /10, bone at [14] /10,
  *     visceral fat at [17-18] LE /10.
  */
-export class HoffenAdapter implements ScaleAdapter {
+export class HoffenAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = 'Hoffen BS-8107';
+  readonly match: MatchDescriptor = { priority: 20, names: { exact: ['hoffen bs-8107'] } };
   readonly charNotifyUuid = uuid16(0xffb2);
   readonly charWriteUuid = uuid16(0xffb2);
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   private cachedFat = 0;
   private cachedWater = 0;
@@ -37,8 +38,7 @@ export class HoffenAdapter implements ScaleAdapter {
   private cachedVisceral = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === 'hoffen bs-8107';
+    return matchesDescriptor(device, this.match);
   }
 
   /**

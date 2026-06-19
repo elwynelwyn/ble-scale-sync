@@ -1,11 +1,14 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 /**
  * Adapter for Active Era BS-06 body-fat scales.
@@ -22,8 +25,9 @@ import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js
  *
  * Weight and impedance are cached across frames.
  */
-export class ActiveEraAdapter implements ScaleAdapter {
+export class ActiveEraAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Active Era BS-06';
+  readonly match: MatchDescriptor = { priority: 50, names: { includes: ['ae bs-06'] } };
   readonly charNotifyUuid = uuid16(0xffb2);
   readonly charWriteUuid = uuid16(0xffb1);
   readonly normalizesWeight = true;
@@ -38,8 +42,7 @@ export class ActiveEraAdapter implements ScaleAdapter {
   private cachedImpedance = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name.includes('ae bs-06');
+    return matchesDescriptor(device, this.match);
   }
 
   parseNotification(data: Buffer): ScaleReading | null {

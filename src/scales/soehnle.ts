@@ -1,17 +1,18 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { buildPayload } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 // Soehnle custom 128-bit service / characteristic UUIDs
 const CHR_NOTIFY_A = '352e300128e940b8a3616db4cca4147c';
 const CHR_CMD = '352e300228e940b8a3616db4cca4147c';
-
-const KNOWN_PREFIXES = ['shape200', 'shape100', 'shape50', 'style100'];
 
 /**
  * Adapter for Soehnle Shape / Style scales (Shape200, Shape100, Shape50, Style100).
@@ -28,8 +29,12 @@ const KNOWN_PREFIXES = ['shape200', 'shape100', 'shape50', 'style100'];
  *
  * Unlock sends a history request command periodically.
  */
-export class SoehnleScaleAdapter implements ScaleAdapter {
+export class SoehnleScaleAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Soehnle Shape/Style';
+  readonly match: MatchDescriptor = {
+    priority: 160,
+    names: { startsWith: ['shape200', 'shape100', 'shape50', 'style100'] },
+  };
   readonly charNotifyUuid = CHR_NOTIFY_A;
   readonly charWriteUuid = CHR_CMD;
   readonly normalizesWeight = true;
@@ -38,8 +43,7 @@ export class SoehnleScaleAdapter implements ScaleAdapter {
   readonly unlockIntervalMs = 5000;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return KNOWN_PREFIXES.some((p) => name.startsWith(p));
+    return matchesDescriptor(device, this.match);
   }
 
   /**

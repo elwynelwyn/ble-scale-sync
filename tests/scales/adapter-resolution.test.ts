@@ -84,3 +84,20 @@ describe('adapter resolution (#235 fff0+ae00 QN/Inlife collision)', () => {
     expect(matched?.name).toBe('Inlife');
   });
 });
+
+// Regression for #232: the Xiaomi Mijia S800 advertises encrypted MiBeacon in
+// FE95 service data carrying product id 0x51E2. It must resolve to the S800
+// adapter (no other adapter reads FE95).
+describe('adapter resolution (#232 Xiaomi S800 FE95)', () => {
+  it('resolves a Xiaomi S800 FE95 advertisement to the S800 adapter', () => {
+    const info: BleDeviceInfo = {
+      localName: 'Mijia Scale S800 A1AB',
+      serviceUuids: [],
+      serviceData: [
+        { uuid: 'fe95', data: Buffer.from([0x58, 0x59, 0xe2, 0x51, 0x5b, 0, 0, 0, 0, 0, 0]) },
+      ],
+    };
+    const matched = adapters.find((a) => a.matches(info));
+    expect(matched?.name).toBe('Xiaomi Mijia Scale S800');
+  });
+});

@@ -1,12 +1,14 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, xorChecksum, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 const CHR_NOTIFY = uuid16(0xfff4);
 const CHR_WRITE = uuid16(0xfff1);
@@ -22,14 +24,13 @@ const CHR_WRITE = uuid16(0xfff1);
  *   - Visceral fat at [11], water at [12-13] BE / 10
  *   - Complete when weight > 0 and fat byte at [6] is not 0xFF
  */
-export class ExcelvanCF369Adapter implements ScaleAdapter {
+export class ExcelvanCF369Adapter implements ScaleAdapterCore, GattWiring {
   readonly name = 'Excelvan CF369';
+  readonly match: MatchDescriptor = { priority: 110, names: { exact: ['electronic scale'] } };
   readonly charNotifyUuid = CHR_NOTIFY;
   readonly charWriteUuid = CHR_WRITE;
 
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   /** Cached body-composition values from the most recent parsed frame. */
   private cachedComp: ScaleBodyComp = {};
@@ -56,8 +57,7 @@ export class ExcelvanCF369Adapter implements ScaleAdapter {
   }
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === 'electronic scale';
+    return matchesDescriptor(device, this.match);
   }
 
   /**

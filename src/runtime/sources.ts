@@ -1,4 +1,4 @@
-import { ReadingWatcher, resolveHandlerKey } from '../ble/index.js';
+import { createReadingSource } from '../ble/index.js';
 import type { ScaleAdapter } from '../interfaces/scale-adapter.js';
 import { resolveUserProfile } from '../config/resolve.js';
 import { ConsecutiveFailureWatchdog } from '../ble/watchdog.js';
@@ -20,9 +20,11 @@ export interface ReadingSourceBundle {
 }
 
 /**
- * Build the `ReadingSource` + per-handler hooks for the loop. Proxy paths are
- * event-driven; the poll path scans on every iteration and applies the #143
- * grace floor + #154 watchdog only on node-ble (BlueZ).
+ * Build the `ReadingSource` + per-handler hooks for the loop. Transport
+ * selection lives entirely in `createReadingSource` (#246); this never branches
+ * on handler name. The factory returns a ready watcher for the proxy transports
+ * or a poll plan for the native ones, which gets the #143 grace floor + #154
+ * watchdog wired here.
  */
 export async function buildReadingSource(
   ctx: AppContext,
@@ -30,58 +32,40 @@ export async function buildReadingSource(
   watchdogMaxFailures: number,
   scanCooldownSecFallback: number,
 ): Promise<ReadingSourceBundle> {
-  if (ctx.bleHandler === 'mqtt-proxy' && ctx.mqttProxy) {
-    const watcher = new ReadingWatcher(
-      ctx.mqttProxy,
-      adapters,
-      ctx.scaleMac,
-      resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-    );
+  // Re-derived on each call (and on each reload) so edits to users[0] land on
+  // the next cycle without a process restart.
+  const profile = () => resolveUserProfile(ctx.config.users[0], ctx.config.scale);
+  const scaleAuth = () => ({
+    pin: ctx.config.users[0]?.beurer_pin,
+    userIndex: ctx.config.users[0]?.beurer_user_index,
+  });
+
+  const plan = await createReadingSource({
+    bleHandler: ctx.bleHandler,
+    mqttProxy: ctx.mqttProxy,
+    esphomeProxy: ctx.esphomeProxy,
+    adapters,
+    targetMac: ctx.scaleMac,
+    profile: profile(),
+    scaleAuth: scaleAuth(),
+  });
+
+  if (plan.kind === 'watcher') {
     return {
-      source: watcher,
-      failureLogPrefix: 'Error processing reading',
-      // Re-resolve profile from the (possibly hot-swapped) ctx.config so
-      // edits to users[0].height/age/gender land on the next GATT cycle
-      // without a process restart.
+      source: plan.watcher,
+      failureLogPrefix: plan.failureLogPrefix,
       onSourceReload: () =>
-        watcher.updateConfig(
+        plan.watcher.updateConfig({
           adapters,
-          ctx.scaleMac,
-          resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-        ),
+          targetMac: ctx.scaleMac,
+          profile: profile(),
+          scaleAuth: scaleAuth(),
+        }),
     };
   }
 
-  if (ctx.bleHandler === 'esphome-proxy' && ctx.esphomeProxy) {
-    const { ReadingWatcher: EsphomeReadingWatcher } =
-      await import('../ble/handler-esphome-proxy/index.js');
-    const esphomeScaleAuth = () => ({
-      pin: ctx.config.users[0]?.beurer_pin,
-      userIndex: ctx.config.users[0]?.beurer_user_index,
-    });
-    const watcher = new EsphomeReadingWatcher(
-      ctx.esphomeProxy,
-      adapters,
-      ctx.scaleMac,
-      resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-      esphomeScaleAuth(),
-    );
-    return {
-      source: watcher,
-      failureLogPrefix: 'Error processing ESPHome reading',
-      onSourceReload: () =>
-        watcher.updateConfig(
-          adapters,
-          ctx.scaleMac,
-          resolveUserProfile(ctx.config.users[0], ctx.config.scale),
-          esphomeScaleAuth(),
-        ),
-    };
-  }
-
-  // Poll-based loop for auto/noble BLE handlers. Watchdog is BlueZ-specific
-  // (#154). Post-disconnect grace (#143) applies only to node-ble: proxy and
-  // noble stacks use a different transport and don't hit the dying-peer stall.
+  // Poll-based loop for native BLE handlers. Watchdog is BlueZ-specific (#154).
+  // Post-disconnect grace (#143) applies only to node-ble (plan.appliesGraceFloor).
   //
   // On trip: set non-zero exit code, then ask the app to abort. main()'s
   // finally runs (stops heartbeat, closes embedded broker), then the process
@@ -101,7 +85,7 @@ export async function buildReadingSource(
     },
   );
 
-  const applyGraceFloor = resolveHandlerKey(ctx.bleHandler) === 'node-ble';
+  const applyGraceFloor = plan.appliesGraceFloor;
 
   return {
     source: new PollReadingSource(ctx, adapters),

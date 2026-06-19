@@ -36,6 +36,7 @@ const FIXTURES: Record<string, BleDeviceInfo> = {
   'Renpho ES-26BB': { localName: 'es-26bb-b', serviceUuids: [] },
   'Beurer BF720/BF105': { localName: 'BF720', serviceUuids: [] },
   'Xiaomi Mi Scale 2': { localName: 'MIBFS', serviceUuids: [] },
+  'Xiaomi Mijia Scale S800': { localName: 'Mijia Scale S800 A1AB', serviceUuids: [] },
   Yunmai: { localName: 'Yunmai', serviceUuids: [] },
   'Beurer / Sanitas': { localName: 'Beurer BF700', serviceUuids: [] },
   'Sanitas SBF72/73': { localName: 'SBF72', serviceUuids: [] },

@@ -4,12 +4,16 @@ import type {
   BleDeviceInfo,
   CharacteristicBinding,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  MultiCharNotify,
+  BroadcastSource,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { bleLog, normalizeUuid } from '../ble/types.js';
+import type { MatchDescriptor } from './match-descriptor.js';
 
 /**
  * Eufy Smart Scale P2 (T9148) and P2 Pro (T9149).
@@ -270,12 +274,18 @@ export function parseEufyAdvertisement(vendor: Buffer): ScaleReading | null {
   return { weight, impedance: 0 };
 }
 
-export class EufyP2Adapter implements ScaleAdapter {
+export class EufyP2Adapter
+  implements ScaleAdapterCore, GattWiring, MultiCharNotify, BroadcastSource
+{
   readonly name = 'Eufy Smart Scale P2/P2 Pro';
+  readonly match: MatchDescriptor = {
+    priority: 270,
+    custom: true,
+    names: { startsWith: ['eufy t9148', 'eufy t9149'], exact: ['eufy t9148', 'eufy t9149'] },
+    manufacturerId: 0xff48,
+  };
   readonly charNotifyUuid = CHR_DATA;
   readonly charWriteUuid = CHR_WRITE;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
   readonly normalizesWeight = true;
 
   readonly characteristics: CharacteristicBinding[] = [

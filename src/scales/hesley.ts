@@ -1,11 +1,14 @@
 import type {
   BleDeviceInfo,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
+  Unlockable,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 const CHR_NOTIFY = uuid16(0xfff4);
 const CHR_WRITE = uuid16(0xfff1);
@@ -20,8 +23,9 @@ const CHR_WRITE = uuid16(0xfff1);
  *   - Fat at [4-5] BE / 10, water at [8-9] BE / 10
  *   - Muscle at [10-11] BE / 10, bone at [12-13] BE / 10
  */
-export class HesleyScaleAdapter implements ScaleAdapter {
+export class HesleyScaleAdapter implements ScaleAdapterCore, GattWiring, Unlockable {
   readonly name = 'Hesley';
+  readonly match: MatchDescriptor = { priority: 100, names: { exact: ['yunchen'] } };
   readonly charNotifyUuid = CHR_NOTIFY;
   readonly charWriteUuid = CHR_WRITE;
   readonly normalizesWeight = true;
@@ -33,8 +37,7 @@ export class HesleyScaleAdapter implements ScaleAdapter {
   private cachedComp: ScaleBodyComp = {};
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-    return name === 'yunchen';
+    return matchesDescriptor(device, this.match);
   }
 
   /**

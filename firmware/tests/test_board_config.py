@@ -57,6 +57,15 @@ class TestBoardConnectConfig(unittest.TestCase):
             self.assertEqual(mod.CONNECT_RETRIES, 1, f"{name} should not need retries")
             self.assertEqual(mod.CONNECT_SCAN_MS, 15000, f"{name} keeps the 15s window")
 
+    def test_all_boards_define_idf_heap_tunables_default_zero(self):
+        for name in _ALL_BOARDS:
+            mod = self._load(name)
+            for const in ("CONNECT_MIN_IDF_LARGEST", "CONNECT_MIN_IDF_FREE"):
+                self.assertTrue(hasattr(mod, const), f"{name} missing {const}")
+                value = getattr(mod, const)
+                self.assertIsInstance(value, int, f"{name}.{const} must be int")
+                self.assertGreaterEqual(value, 0, f"{name}.{const} must be >= 0")
+
 
 if __name__ == "__main__":
     unittest.main()

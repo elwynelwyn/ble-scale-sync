@@ -14,16 +14,24 @@ _ble = bluetooth.BLE()
 # Bluetooth Base UUID suffix (matches Node.js normalizeUuid)
 _BT_BASE_SUFFIX = "00001000800000805f9b34fb"
 
+# Always-on conservative crash floor for the pre-connect IDF-heap guard (#139).
+# The observed crash is at free=392 largest=336. A BLE central connection plus
+# GATT discovery needs kilobytes across several distinct-sized allocations
+# (estimated 4 to 12 KB, never measured on this build), so a floor far above
+# 336/392 yet far below 4 KB can only ever trip the pathological near-zero case
+# and can never refuse a connect that could have succeeded. Deciding which
+# connects are winnable is left to the board tunables, which default to 0.
+CRASH_FLOOR_LARGEST = 1024
+CRASH_FLOOR_FREE = 2048
 
-def _log_idf_heap(when):
-    """Log ESP-IDF heap headroom (best-effort, no-op off-device).
+
+def _read_idf_heap():
+    """Return (free, largest) ESP-IDF data-heap bytes on-device, None off-device.
 
     NimBLE allocates its connection structures from the ESP-IDF heap, which is
-    separate from the MicroPython GC heap. On a no-PSRAM classic ESP32 this heap
-    can be exhausted by WiFi + MQTT, so a GATT connect fails to allocate and
-    NimBLE aborts with a C-level semaphore assertion (#139). Logging free + the
-    largest contiguous block right before connect tells a RAM ceiling (tiny
-    `largest`) apart from a radio-coexistence timeout (healthy `largest`).
+    separate from the MicroPython GC heap. Reading it requires the frozen
+    `esp32` builtin, absent on a host, so this returns None there and every
+    caller treats None as "cannot read, do not gate" (#139).
     """
     try:
         import esp32
@@ -31,9 +39,30 @@ def _log_idf_heap(when):
         regions = esp32.idf_heap_info(esp32.HEAP_DATA)
         free = sum(r[1] for r in regions)
         largest = max(r[2] for r in regions)
-        print("IDF heap %s: free=%d largest=%d" % (when, free, largest))
+        return (free, largest)
     except Exception:
-        pass
+        return None
+
+
+def _log_idf_heap(when):
+    """Log ESP-IDF heap headroom (best-effort, no-op off-device). See
+    _read_idf_heap for why the read can be absent. Tiny `largest` here tells a
+    RAM ceiling apart from a radio-coexistence timeout (healthy `largest`)."""
+    heap = _read_idf_heap()
+    if heap is not None:
+        free, largest = heap
+        print("IDF heap %s: free=%d largest=%d" % (when, free, largest))
+
+
+def _should_skip_connect(free, largest, min_free, min_largest):
+    """Pure crash-floor decision (#139): True when the IDF heap is too low to
+    attempt a GATT connect. Gates the largest contiguous block AND the free
+    total together, because connection bring-up performs several
+    distinct-sized allocations that must all land, so a largest-only check is
+    structurally insufficient. min_free / min_largest are the EFFECTIVE floors
+    (max of the always-on crash floor and the board tunable); this function is
+    host-testable and does not read the heap itself."""
+    return largest < min_largest or free < min_free
 
 
 def _norm_uuid(uuid):
@@ -179,35 +208,21 @@ def _unpack_scan_result(data):
     return addr_type, addr, rssi, adv_data
 
 
-def _addr_is_random_static(address):
-    """True if a colon-MAC string is a BLE static random address.
+def _addr_type_probe_order(addr_type):
+    """Connect address types to attempt: the controller-reported type first, then
+    the opposite as a #231 timeout fallback. Returns ints (0 = public, 1 = random).
 
-    A static random address is defined by the top two bits of its most
-    significant byte being 0b11 (addr[0] & 0xC0 == 0xC0). That pattern is
-    reserved exclusively for random static addresses, so it identifies the
-    type even when the controller misreports it in the scan result (some
-    NimBLE / ESP-IDF builds report such a scale as public). Public,
-    resolvable-private (0b01) and non-resolvable-private (0b00) addresses are
-    NOT distinguishable from each other by bits alone, so only this one
-    pattern is treated as authoritative (#231).
+    aioble gap_connect matches on addr_type as well as the address, so a wrong type
+    only ever surfaces as a connect TimeoutError; probing both rules it out before
+    giving up. The controller-reported type comes straight from the advertising PDU
+    TxAdd bit and is authoritative, so it is always tried first. An earlier build
+    derived the type from the MAC bits (addr[0] & 0xC0 == 0xC0) on the theory that
+    an FF address must be random static, but a public address may use any bytes and
+    cheap scale SoCs advertise arbitrary public addresses that also start with 0xFF;
+    that override connected the QN-Scale as random so it never matched the public
+    advertiser and always timed out (#231).
     """
-    return (int(address.split(":")[0], 16) & 0xC0) == 0xC0
-
-
-def _addr_type_probe_order(addr_type, address=None):
-    """Connect address types to attempt: best-guess type first, then the
-    opposite as a #231 timeout fallback. Returns ints (0 = public, 1 = random).
-
-    aioble gap_connect matches on addr_type, so a misreported type only shows
-    up as a connect timeout; probing both rules it out before giving up. When
-    the MAC is an unambiguous static random address (addr[0] & 0xC0 == 0xC0),
-    its real type is known from the bits, so probe random first regardless of a
-    misreported scan type; otherwise trust the scan-reported type (#231).
-    """
-    if address is not None and _addr_is_random_static(address):
-        primary = 1
-    else:
-        primary = addr_type & 1
+    primary = addr_type & 1
     return (primary, primary ^ 1)
 
 
@@ -411,22 +426,49 @@ class BleBridge:
         except Exception as e:  # noqa: BLE001
             print("Warning: could not restore aioble IRQ before connect: %s" % e)
         addr_bytes = bytes(int(b, 16) for b in address.split(":"))
-        # Reclaim heap before connecting. NimBLE allocates its connection from
-        # the ESP-IDF heap, and an empty MicroPython split is returned to that
-        # heap during a GC pass (MICROPY_GC_SPLIT_HEAP_AUTO), so collecting after
-        # the scan buffers are freed gives NimBLE the best chance to allocate on
-        # a tight no-PSRAM board (#139). Two passes: the second can release a
-        # split that the first only emptied.
+        # Two gc.collect() passes before connecting (#139). Under MICROPY_GC_SPLIT_HEAP_AUTO
+        # a MicroPython split is returned to the ESP-IDF heap only when it becomes fully
+        # empty during a pass, so gc.collect() cannot hand kilobytes back to the IDF heap
+        # that NimBLE allocates from; on a busy no-PSRAM board it usually frees zero whole
+        # splits. It is kept because the second pass is the single cheap lever that can
+        # release a split the first only just emptied (for example the scan buffers), and
+        # it costs only a few ms against a multi-second connect window. gc.mem_free()
+        # measures the GC heap, not this pool, so it must never gate a connect; the real
+        # guard is the IDF-heap read below.
         import gc
 
         gc.collect()
-        # The second pass can release a split the first only emptied, which
-        # matters on a tight no-PSRAM board (#139). On PSRAM boards it only adds
-        # latency before connect, and a stepped-on scale stays connectable
-        # briefly (#231), so gate it on the aggressive-GC board flag.
+        # The second pass can release a split the first only emptied, which matters on a
+        # tight no-PSRAM board (#139). On PSRAM boards it only adds latency before connect,
+        # and a stepped-on scale stays connectable briefly (#231), so gate it on the
+        # aggressive-GC board flag.
         if getattr(board, "AGGRESSIVE_GC", True):
             gc.collect()
         _log_idf_heap("before connect")
+
+        # Pre-connect IDF-heap crash guard (#139). NimBLE builds the connection from
+        # the ESP-IDF heap; on a no-PSRAM board with WiFi up that heap can be down to
+        # a few hundred bytes contiguous, so device.connect() trips a NULL malloc deep
+        # in npl_freertos_sem_init and the C assert panics the chip (uncatchable from
+        # Python). Reading the heap here and refusing the connect turns that reboot
+        # loop into a clean MemoryError that the existing handlers report and recover
+        # from. The read returns None off-device (host tests), where the gate is a
+        # no-op so the connect proceeds. Effective floor = max(always-on crash floor,
+        # board tunable); the board tunables default to 0 (pure crash floor) until a
+        # maintainer calibrates them from a successful-connect heap delta on a PSRAM
+        # board. Both largest and free are gated because several distinct-sized
+        # allocations must all land.
+        _heap = _read_idf_heap()
+        if _heap is not None:
+            _free, _largest = _heap
+            _min_largest = max(CRASH_FLOOR_LARGEST, getattr(board, "CONNECT_MIN_IDF_LARGEST", 0))
+            _min_free = max(CRASH_FLOOR_FREE, getattr(board, "CONNECT_MIN_IDF_FREE", 0))
+            if _should_skip_connect(_free, _largest, _min_free, _min_largest):
+                raise MemoryError(
+                    "IDF heap too low for GATT connect: free=%d largest=%d (#139); "
+                    "use an ESP32-S3 / PSRAM board for GATT-connect scales"
+                    % (_free, _largest)
+                )
 
         # aioble forwards scan_duration_ms to gap_connect (default 2 s). Scales
         # advertising in short bursts (Eufy P2 Pro) miss that window, so match it
@@ -437,13 +479,15 @@ class BleBridge:
         scan_ms = getattr(board, "CONNECT_SCAN_MS", 15000)
         retries = getattr(board, "CONNECT_RETRIES", 1)
 
-        # Try the advertised address type first, then the opposite once if it
-        # times out. A wrong addr_type is indistinguishable from an absent peer
-        # to aioble gap_connect (it matches on addr AND addr_type), so a scale
-        # whose type was misreported looks like a pure TimeoutError (#231).
+        # Probe the controller-reported address type first, then the opposite as
+        # a fallback on any failure. A wrong addr_type is indistinguishable from
+        # an absent peer to aioble gap_connect (it matches on addr AND addr_type),
+        # so a scale connected with the wrong type looks like a TimeoutError, and
+        # an aioble re-entry can also surface a TypeError; either way the fallback
+        # must run (#231).
         self._conn = None
         last_exc = None
-        for probe, use_type in enumerate(_addr_type_probe_order(addr_type, address)):
+        for probe, use_type in enumerate(_addr_type_probe_order(addr_type)):
             aioble_type = aioble.ADDR_RANDOM if use_type else aioble.ADDR_PUBLIC
             device = aioble.Device(aioble_type, addr_bytes)
             type_retries = retries if probe == 0 else 1
@@ -465,21 +509,39 @@ class BleBridge:
                         await asyncio.sleep_ms(500)
             if self._conn is not None:
                 break
-            # Only the opposite address type can cure a timeout; bail on any
-            # other error so a real failure does not double the wait.
-            if not isinstance(last_exc, asyncio.TimeoutError):
-                break
+            # Try the opposite address type on any connect failure, not only a
+            # TimeoutError. A misreported type is the usual reason a known-awake
+            # scale fails to connect, and discriminating on the exception class
+            # proved fragile: a re-entry into aioble after a wrong-type timeout
+            # surfaced a TypeError ("coroutine expected"), not a TimeoutError, so
+            # the fallback was skipped and the connect stranded on one type (#231).
             gc.collect()
         if self._conn is None and last_exc is not None:
             raise last_exc
         self._chars = {}
-        chars_info = []
 
-        try:
-            services = await asyncio.wait_for(self._conn.services(), 10)
+        # aioble's services()/characteristics() return ClientDiscover async
+        # iterators, not coroutines, so they must be driven with `async for`.
+        # Wrapping them in asyncio.wait_for() called create_task() on a
+        # non-coroutine and raised "TypeError: coroutine expected", which
+        # escaped the timeout handler and stranded the autonomous connect in
+        # main.py's retry loop (#231). aioble's own per-call timeout_ms is an
+        # unimplemented TODO (ClientDiscover.__anext__ waits on an IRQ flag with
+        # no timeout), so one asyncio.wait_for around the whole discovery is
+        # what actually bounds a stalled peer.
+        async def _discover_chars():
+            chars_info = []
+            # aioble allows only one discovery in flight per connection (a single
+            # connection._discover slot), so the services() iterator must be
+            # fully drained before any characteristics() discovery starts.
+            # Nesting characteristics() inside the services() loop raised
+            # "ValueError: Discovery in progress" (#231). Collect services first,
+            # then discover characteristics per service (aioble's own pattern).
+            services = []
+            async for service in self._conn.services():
+                services.append(service)
             for service in services:
-                chars = await asyncio.wait_for(service.characteristics(), 10)
-                for char in chars:
+                async for char in service.characteristics():
                     uuid_str = _norm_uuid(char.uuid)
                     self._chars[uuid_str] = char
                     props = []
@@ -494,8 +556,16 @@ class BleBridge:
                     if char.properties & bluetooth.FLAG_INDICATE:
                         props.append("indicate")
                     chars_info.append({"uuid": uuid_str, "properties": props})
+            return chars_info
+
+        try:
+            chars_info = await asyncio.wait_for(_discover_chars(), 10)
         except asyncio.TimeoutError:
             print(f"Service discovery timed out for {address}")
+            await self.disconnect()
+            raise
+        except Exception as e:
+            print(f"Service discovery failed for {address}: {type(e).__name__}: {e}")
             await self.disconnect()
             raise
 

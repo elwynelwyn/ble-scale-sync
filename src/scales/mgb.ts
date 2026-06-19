@@ -1,12 +1,14 @@
 import type {
   BleDeviceInfo,
   ConnectionContext,
-  ScaleAdapter,
+  ScaleAdapterCore,
+  GattWiring,
   ScaleReading,
   UserProfile,
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js';
+import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 
 /**
  * Adapter for MGB-protocol scales (Swan, Icomon, YG brands).
@@ -22,13 +24,16 @@ import { uuid16, buildPayload, type ScaleBodyComp } from './body-comp-helpers.js
  *
  * Values are cached across frames until a complete reading is available.
  */
-export class MgbAdapter implements ScaleAdapter {
+export class MgbAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = 'MGB (Swan/Icomon/YG)';
+  readonly match: MatchDescriptor = {
+    priority: 30,
+    names: { startsWith: ['swan'], exact: ['icomon', 'yg'] },
+    serviceUuids: ['ffb0'],
+  };
   readonly charNotifyUuid = uuid16(0xffb2);
   readonly charWriteUuid = uuid16(0xffb1);
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   private cachedWeight = 0;
   private cachedFat = 0;
@@ -37,14 +42,7 @@ export class MgbAdapter implements ScaleAdapter {
   private cachedWater = 0;
 
   matches(device: BleDeviceInfo): boolean {
-    const name = (device.localName || '').toLowerCase();
-
-    if (name.startsWith('swan')) return true;
-    if (name === 'icomon') return true;
-    if (name === 'yg') return true;
-
-    const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
-    return uuids.some((u) => u === 'ffb0' || u === uuid16(0xffb0));
+    return matchesDescriptor(device, this.match);
   }
 
   /**

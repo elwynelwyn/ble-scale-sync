@@ -1,5 +1,6 @@
-import type { ScaleAdapter } from '../interfaces/scale-adapter.js';
+import type { MatchDescriptor, ScaleAdapter } from '../interfaces/scale-adapter.js';
 import { StandardGattScaleAdapter } from './standard-gatt.js';
+import { descriptorNameTokens } from './match-descriptor.js';
 
 /**
  * Structural integrity checks for the scale-adapter registry.
@@ -54,6 +55,92 @@ export function checkRegistryIntegrity(adapters: readonly ScaleAdapter[]): Regis
         `fallback); found at index ${genericIdx} of ${adapters.length - 1}. ` +
         `A specific adapter placed after it can be shadowed.`,
     );
+  }
+
+  // Every registered adapter MUST declare a match descriptor (the member is
+  // optional on the interface only so test mocks can omit it).
+  for (const a of adapters) {
+    if (!a.match) {
+      errors.push(`Adapter "${a.name}" is missing a match descriptor (required in the registry).`);
+    }
+  }
+  // Work only with adapters that declared a descriptor; the loop above already
+  // recorded an error for any that did not.
+  const withMatch = adapters.filter(
+    (a): a is ScaleAdapter & { match: MatchDescriptor } => a.match !== undefined,
+  );
+
+  // Priorities must be a unique total order; the resolver relies on it.
+  const prioritySeen = new Map<number, string>();
+  for (const a of withMatch) {
+    const prev = prioritySeen.get(a.match.priority);
+    if (prev !== undefined) {
+      errors.push(
+        `Duplicate match.priority ${a.match.priority} on "${a.name}" and "${prev}". ` +
+          `Priorities must be unique so selection is deterministic.`,
+      );
+    } else {
+      prioritySeen.set(a.match.priority, a.name);
+    }
+  }
+
+  // The generic adapter must be the unique lowest priority.
+  if (withMatch.length > 0) {
+    const minPriority = Math.min(...withMatch.map((a) => a.match.priority));
+    const generic = withMatch.find((a) => a instanceof StandardGattScaleAdapter);
+    if (generic && generic.match.priority !== minPriority) {
+      errors.push(
+        `StandardGattScaleAdapter must have the lowest match.priority; it has ` +
+          `${generic.match.priority} but the minimum is ${minPriority}.`,
+      );
+    }
+  }
+
+  // Documented ordering invariants, expressed as data (priority comparisons)
+  // rather than array position. Each pair: [higher-precedence, lower].
+  const byName = new Map(withMatch.map((a) => [a.name, a] as const));
+  const INVARIANTS: ReadonlyArray<readonly [string, string]> = [
+    ['Senssun Fat Scale', 'QN Scale'],
+    ['Eufy Smart Scale P2/P2 Pro', 'QN Scale'],
+    ['QN Scale', 'Renpho ES-WBE28'],
+    ['Beurer BF720/BF105', 'Xiaomi Mi Scale 2'],
+    ['Robi S9', 'MGB (Swan/Icomon/YG)'],
+  ];
+  for (const [hi, lo] of INVARIANTS) {
+    const a = byName.get(hi);
+    const b = byName.get(lo);
+    if (!a || !b) continue; // a missing/renamed adapter is caught elsewhere
+    if (a.match.priority <= b.match.priority) {
+      errors.push(
+        `Ordering invariant violated: "${hi}" (priority ${a.match.priority}) must ` +
+          `outrank "${lo}" (priority ${b.match.priority}).`,
+      );
+    }
+  }
+
+  // Overlap detection: two NON-custom adapters that claim the same name token or
+  // service UUID would shadow each other on descriptor data alone, with no
+  // bespoke disambiguator. That is an error. Overlaps where at least one side is
+  // `custom` (its matches() applies extra char/byte/exclusion logic) are
+  // expected and intentionally NOT flagged; they are covered by the
+  // fixture-based registry-collision test. The generic adapter overlaps many by
+  // design and is skipped.
+  for (let i = 0; i < withMatch.length; i++) {
+    for (let j = i + 1; j < withMatch.length; j++) {
+      const a = withMatch[i];
+      const b = withMatch[j];
+      if (a instanceof StandardGattScaleAdapter || b instanceof StandardGattScaleAdapter) continue;
+      if (a.match.custom || b.match.custom) continue;
+      const aNames = new Set(descriptorNameTokens(a.match));
+      const sharedName = descriptorNameTokens(b.match).some((t) => aNames.has(t));
+      const aSvc = new Set((a.match.serviceUuids ?? []).map((u) => u.toLowerCase()));
+      const sharedSvc = (b.match.serviceUuids ?? []).some((u) => aSvc.has(u.toLowerCase()));
+      if (!sharedName && !sharedSvc) continue;
+      errors.push(
+        `Adapters "${a.name}" and "${b.name}" claim the same name/service with ` +
+          `no custom disambiguator. One will shadow the other.`,
+      );
+    }
   }
 
   return { errors, warnings };

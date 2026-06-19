@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+// Side-effect import: building the registry registers it with the exclusion
+// derivation, so StandardGattScaleAdapter.matches() excludes names that more
+// specific adapters claim even when this file is run in isolation (#245).
+import '../../src/scales/index.js';
 import { StandardGattScaleAdapter } from '../../src/scales/standard-gatt.js';
 import {
   mockPeripheral,

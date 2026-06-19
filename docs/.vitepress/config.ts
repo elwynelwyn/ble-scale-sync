@@ -52,7 +52,7 @@ export default defineConfig({
       { text: 'Stats', link: 'https://stats.blescalesync.dev' },
       {
         text: `v${pkg.version}`,
-        link: `https://github.com/KristianP26/ble-scale-sync/releases/tag/v${pkg.version}`,
+        link: '/changelog',
       },
     ],
 
@@ -88,7 +88,6 @@ export default defineConfig({
           { text: 'FAQ', link: '/faq' },
           { text: 'Troubleshooting', link: '/troubleshooting' },
           { text: 'Alternatives', link: '/alternatives' },
-          { text: 'Changelog', link: '/changelog' },
         ],
       },
     ],
