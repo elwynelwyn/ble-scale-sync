@@ -179,35 +179,21 @@ def _unpack_scan_result(data):
     return addr_type, addr, rssi, adv_data
 
 
-def _addr_is_random_static(address):
-    """True if a colon-MAC string is a BLE static random address.
+def _addr_type_probe_order(addr_type):
+    """Connect address types to attempt: the controller-reported type first, then
+    the opposite as a #231 timeout fallback. Returns ints (0 = public, 1 = random).
 
-    A static random address is defined by the top two bits of its most
-    significant byte being 0b11 (addr[0] & 0xC0 == 0xC0). That pattern is
-    reserved exclusively for random static addresses, so it identifies the
-    type even when the controller misreports it in the scan result (some
-    NimBLE / ESP-IDF builds report such a scale as public). Public,
-    resolvable-private (0b01) and non-resolvable-private (0b00) addresses are
-    NOT distinguishable from each other by bits alone, so only this one
-    pattern is treated as authoritative (#231).
+    aioble gap_connect matches on addr_type as well as the address, so a wrong type
+    only ever surfaces as a connect TimeoutError; probing both rules it out before
+    giving up. The controller-reported type comes straight from the advertising PDU
+    TxAdd bit and is authoritative, so it is always tried first. An earlier build
+    derived the type from the MAC bits (addr[0] & 0xC0 == 0xC0) on the theory that
+    an FF address must be random static, but a public address may use any bytes and
+    cheap scale SoCs advertise arbitrary public addresses that also start with 0xFF;
+    that override connected the QN-Scale as random so it never matched the public
+    advertiser and always timed out (#231).
     """
-    return (int(address.split(":")[0], 16) & 0xC0) == 0xC0
-
-
-def _addr_type_probe_order(addr_type, address=None):
-    """Connect address types to attempt: best-guess type first, then the
-    opposite as a #231 timeout fallback. Returns ints (0 = public, 1 = random).
-
-    aioble gap_connect matches on addr_type, so a misreported type only shows
-    up as a connect timeout; probing both rules it out before giving up. When
-    the MAC is an unambiguous static random address (addr[0] & 0xC0 == 0xC0),
-    its real type is known from the bits, so probe random first regardless of a
-    misreported scan type; otherwise trust the scan-reported type (#231).
-    """
-    if address is not None and _addr_is_random_static(address):
-        primary = 1
-    else:
-        primary = addr_type & 1
+    primary = addr_type & 1
     return (primary, primary ^ 1)
 
 
@@ -443,7 +429,7 @@ class BleBridge:
         # whose type was misreported looks like a pure TimeoutError (#231).
         self._conn = None
         last_exc = None
-        for probe, use_type in enumerate(_addr_type_probe_order(addr_type, address)):
+        for probe, use_type in enumerate(_addr_type_probe_order(addr_type)):
             aioble_type = aioble.ADDR_RANDOM if use_type else aioble.ADDR_PUBLIC
             device = aioble.Device(aioble_type, addr_bytes)
             type_retries = retries if probe == 0 else 1

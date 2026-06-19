@@ -120,7 +120,17 @@ class TestConnectRestoresAiobleIrq(unittest.IsolatedAsyncioTestCase):
         # By the time aioble's Device.connect() ran, aioble's dispatcher must own
         # the IRQ, otherwise _IRQ_PERIPHERAL_CONNECT is dropped and it times out.
         self.assertIs(_captured["irq_at_connect"], _aioble_core.ble_irq)
-        self.assertEqual(_captured["addr_type"], 1)  # FF.. static random first
+        self.assertEqual(_captured["addr_type"], 1)  # reported type (1) probed first
+
+    async def test_public_scale_probes_reported_type_first(self):
+        # Regression for #231: the QN-Scale advertises as public (addr_type=0).
+        # connect() must probe the reported type (public=0) first, not force
+        # random from the FF MAC bits, or it never matches the advertiser.
+        _captured.clear()
+        bridge = ble_bridge.BleBridge()
+        bridge.start_streaming()
+        await bridge.connect("FF:03:00:53:D6:4D", 0)
+        self.assertEqual(_captured["addr_type"], 0)
 
 
 if __name__ == "__main__":

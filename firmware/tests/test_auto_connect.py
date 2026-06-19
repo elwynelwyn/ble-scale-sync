@@ -144,14 +144,14 @@ class TestFindScaleInRaw(unittest.TestCase):
         self.assertEqual(addr_type, 1)
 
     def test_returns_first_match(self):
-        # Both entries are the same FF (static random) MAC. The first match is
-        # returned, and its misreported addr_type=0 is corrected to 1 (#231).
+        # Both entries are the same FF MAC. The first match is returned, and its
+        # controller-reported addr_type is passed through unchanged (#231).
         raw = [_raw_entry(_MAC_BYTES, addr_type=0), _raw_entry(_MAC_BYTES, addr_type=1)]
         result = main._find_scale_in_raw(raw)
         self.assertIsNotNone(result)
         self.assertEqual(result[0], _MAC_STR)
         self.assertEqual(result[1], _MAC_BYTES)
-        self.assertEqual(result[2], 1)  # FF -> static random, override forces 1
+        self.assertEqual(result[2], 0)  # reported type trusted, no override
 
     def test_empty_scale_macs(self):
         main._scale_macs = set()
@@ -159,8 +159,10 @@ class TestFindScaleInRaw(unittest.TestCase):
         self.assertIsNone(main._find_scale_in_raw(raw))
 
 
-class TestFindScaleAddrTypeOverride(unittest.TestCase):
-    """_find_scale_in_raw corrects a misreported static-random addr_type (#231)."""
+class TestFindScaleTrustsScanAddrType(unittest.TestCase):
+    """_find_scale_in_raw passes the controller-reported addr_type through
+    unchanged. The FF scale advertises as public and must connect as public; the
+    earlier random-forcing override was the #231 bug."""
 
     def setUp(self):
         main._scale_macs = {_MAC_STR, _PUBLIC_MAC_STR}
@@ -168,24 +170,22 @@ class TestFindScaleAddrTypeOverride(unittest.TestCase):
     def tearDown(self):
         main._scale_macs = set()
 
-    def test_static_random_mac_reported_public_is_overridden(self):
-        # FF:.. is static random (0xFF & 0xC0 == 0xC0); scan misreports it as
-        # public (0). Source must force random (1).
+    def test_ff_mac_reported_public_stays_public(self):
+        # FF starts with 0xFF, but the controller reports it public (TxAdd=0) and
+        # the host-initiated path connects it as public successfully, so the
+        # reported type must win. Forcing random here was the bug (#231).
         raw = [_raw_entry(_MAC_BYTES, addr_type=0)]
-        result = main._find_scale_in_raw(raw)
-        self.assertIsNotNone(result)
-        self.assertEqual(result[2], 1)
+        self.assertEqual(main._find_scale_in_raw(raw)[2], 0)
 
-    def test_static_random_mac_reported_random_stays_random(self):
+    def test_ff_mac_reported_random_stays_random(self):
         raw = [_raw_entry(_MAC_BYTES, addr_type=1)]
         self.assertEqual(main._find_scale_in_raw(raw)[2], 1)
 
-    def test_non_static_mac_keeps_reported_public(self):
-        # 84:.. top bits are 0b10, NOT static random; trust the reported type.
+    def test_public_oui_mac_reported_public_stays_public(self):
         raw = [_raw_entry(_PUBLIC_MAC_BYTES, addr_type=0)]
         self.assertEqual(main._find_scale_in_raw(raw)[2], 0)
 
-    def test_non_static_mac_keeps_reported_random(self):
+    def test_public_oui_mac_reported_random_stays_random(self):
         raw = [_raw_entry(_PUBLIC_MAC_BYTES, addr_type=1)]
         self.assertEqual(main._find_scale_in_raw(raw)[2], 1)
 
