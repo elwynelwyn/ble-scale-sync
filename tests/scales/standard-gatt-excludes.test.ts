@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { adapters } from '../../src/scales/index.js';
-import { genericExcludedNameTokens } from '../../src/scales/derived-excludes.js';
+import { genericExcludes, isExcludedName } from '../../src/scales/derived-excludes.js';
 
 // The exact legacy EXCLUDED list that standard-gatt.ts carried before #245.
 // Every one of these names MUST remain excluded from the generic adapter.
@@ -58,18 +58,27 @@ const LEGACY_EXCLUDED = [
   '0203b',
 ];
 
-describe('genericExcludedNameTokens (#245 EXCLUDED derivation)', () => {
-  const tokens = genericExcludedNameTokens(adapters);
+describe('genericExcludes (#245 EXCLUDED derivation)', () => {
+  const ex = genericExcludes(adapters);
 
-  it('keeps every legacy-excluded name excluded (substring containment)', () => {
-    // A legacy token L is still excluded if some derived token T satisfies
-    // L.includes(T) (the generic check is name.includes(token), so a shorter or
-    // equal derived token still rejects any name containing the legacy token).
-    const missing = LEGACY_EXCLUDED.filter((l) => !tokens.some((t) => l.includes(t)));
+  it('keeps every legacy-excluded name excluded', () => {
+    // Each legacy EXCLUDED token, taken as a full device name, must still be
+    // rejected by the derived exclusion set.
+    const missing = LEGACY_EXCLUDED.filter((l) => !isExcludedName(l, ex));
     expect(missing, `Legacy excluded names no longer excluded: ${missing.join(', ')}`).toEqual([]);
   });
 
   it('does not exclude a plain generic name', () => {
-    expect(tokens.some((t) => 'genericscale'.includes(t))).toBe(false);
+    expect(isExcludedName('genericscale', ex)).toBe(false);
+  });
+
+  it('does not over-exclude a generic name merely containing a short exact-claim token', () => {
+    // MGB claims exact 'yg' / 'icomon'. As substrings these would wrongly reject
+    // unrelated generic names; exact claims must only match the full name.
+    expect(isExcludedName('mygym scale', ex)).toBe(false);
+    expect(isExcludedName('oxygym', ex)).toBe(false);
+    // But the exact name itself is still excluded.
+    expect(isExcludedName('yg', ex)).toBe(true);
+    expect(isExcludedName('icomon', ex)).toBe(true);
   });
 });

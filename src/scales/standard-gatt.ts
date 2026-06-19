@@ -7,7 +7,7 @@ import type {
   BodyComposition,
 } from '../interfaces/scale-adapter.js';
 import type { MatchDescriptor } from './match-descriptor.js';
-import { getGenericExcludedTokens } from './derived-excludes.js';
+import { isGenericExcludedName } from './derived-excludes.js';
 
 // Standard BT SIG characteristic UUIDs
 const CHR_BODY_COMP_MEAS = uuid16(0x2a9c);
@@ -79,7 +79,7 @@ export class StandardGattScaleAdapter implements ScaleAdapter {
 
   matches(device: BleDeviceInfo): boolean {
     const name = (device.localName || '').toLowerCase();
-    if (name && getGenericExcludedTokens().some((e) => name.includes(e))) return false;
+    if (name && isGenericExcludedName(name)) return false;
 
     const uuids = (device.serviceUuids || []).map((u) => u.toLowerCase());
     const hasBcs = uuids.some((u) => u === SVC_BODY_COMP_SHORT || u === uuid16(0x181b));
