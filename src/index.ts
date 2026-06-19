@@ -184,6 +184,14 @@ async function main(): Promise<void> {
   }
   log.info(`Adapters: ${adapters.map((a) => a.name).join(', ')}\n`);
 
+  // Inject per-device broadcast secrets (e.g. the Xiaomi S800 MiBeacon bind key)
+  // into adapters that decrypt them. Optional + no-op for adapters without
+  // configure(). Re-applied on config reload below so a hot-edited key takes effect.
+  const applyAdapterBindKey = (bindKey: string | undefined): void => {
+    for (const a of adapters) a.configure?.({ bindKey });
+  };
+  applyAdapterBindKey(ctx.config.ble?.bind_key ?? undefined);
+
   let singleUserExporters: Exporter[] | undefined;
   if (!ctx.dryRun) {
     if (isMultiUser) {
@@ -239,6 +247,7 @@ async function main(): Promise<void> {
 
   const onReload = async (): Promise<void> => {
     await reloadAppConfig(ctx, displaySnapshotRef);
+    applyAdapterBindKey(ctx.config.ble?.bind_key ?? undefined);
     if (ctx.config.users.length === 1) {
       singleUserExporters = ctx.dryRun ? undefined : buildSingleUserExporters(ctx);
     }

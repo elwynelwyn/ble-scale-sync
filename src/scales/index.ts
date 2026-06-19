@@ -3,6 +3,7 @@ import { QnScaleAdapter } from './qn-scale.js';
 import { RenphoScaleAdapter } from './renpho.js';
 import { RenphoEs26bbAdapter } from './renpho-es26bb.js';
 import { MiScale2Adapter } from './mi-scale-2.js';
+import { XiaomiS800Adapter } from './xiaomi-s800.js';
 import { BeurerBf720Adapter } from './beurer-bf720.js';
 import { YunmaiScaleAdapter } from './yunmai.js';
 import { BeurerSanitasScaleAdapter } from './beurer-sanitas.js';
@@ -42,6 +43,9 @@ export const adapters: ScaleAdapter[] = [
   // first (by BF720/BF105 name or Beurer company id 0x0611).
   new BeurerBf720Adapter(),
   new MiScale2Adapter(),
+  // Xiaomi Mijia S800 (ms116): broadcast-only, matches FE95 + product id 0x51E2
+  // or its own name; no collision with any other adapter (#232).
+  new XiaomiS800Adapter(),
   new YunmaiScaleAdapter(),
   new BeurerSanitasScaleAdapter(),
   new SanitasSbf72Adapter(),
