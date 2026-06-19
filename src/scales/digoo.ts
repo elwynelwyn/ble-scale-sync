@@ -32,8 +32,6 @@ export class DigooScaleAdapter implements ScaleAdapterCore, GattWiring {
   readonly charNotifyUuid = CHR_NOTIFY;
   readonly charWriteUuid = CHR_WRITE;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 5000;
 
   /** Cached body-composition values from the most recent parsed frame. */
   private cachedComp: ScaleBodyComp = {};

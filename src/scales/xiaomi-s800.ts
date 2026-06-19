@@ -4,7 +4,6 @@ import type {
   BleDeviceInfo,
   BodyComposition,
   ScaleAdapterCore,
-  GattWiring,
   BroadcastSource,
   ScaleReading,
   UserProfile,
@@ -104,7 +103,7 @@ export function parseS800Object(decrypted: Buffer): ScaleReading | null {
  * the encrypted Mi-auth GATT path (per-user token) and is out of scope; weight
  * plus the user profile drives the existing body-composition pipeline (#232).
  */
-export class XiaomiS800Adapter implements ScaleAdapterCore, GattWiring, BroadcastSource {
+export class XiaomiS800Adapter implements ScaleAdapterCore, BroadcastSource {
   readonly name = 'Xiaomi Mijia Scale S800';
   readonly match: MatchDescriptor = {
     priority: 200,
@@ -114,10 +113,6 @@ export class XiaomiS800Adapter implements ScaleAdapterCore, GattWiring, Broadcas
   };
   // Broadcast-only: no GATT characteristics. preferPassive forces the broadcast
   // path even though the scale is connectable.
-  readonly charNotifyUuid = '';
-  readonly charWriteUuid = '';
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
   readonly normalizesWeight = true;
   readonly preferPassive = true;
 

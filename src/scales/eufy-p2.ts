@@ -286,8 +286,6 @@ export class EufyP2Adapter
   };
   readonly charNotifyUuid = CHR_DATA;
   readonly charWriteUuid = CHR_WRITE;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
   readonly normalizesWeight = true;
 
   readonly characteristics: CharacteristicBinding[] = [

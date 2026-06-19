@@ -143,8 +143,6 @@ export class AdeA2Adapter implements ScaleAdapterCore, GattWiring, MultiCharNoti
   readonly charNotifyUuid = UUID_TBD;
   readonly charWriteUuid = UUID_TBD;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   matches(_device: BleDeviceInfo): boolean {
     return false;

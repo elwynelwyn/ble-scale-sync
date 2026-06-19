@@ -35,8 +35,6 @@ export class ExingtechY1Adapter implements ScaleAdapterCore, GattWiring {
   readonly charWriteUuid = CHR_WRITE;
 
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   /** Cached body-composition values from the most recent parsed frame. */
   private cachedComp: ScaleBodyComp = {};

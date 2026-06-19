@@ -51,8 +51,6 @@ export class RenphoEs26bbAdapter implements ScaleAdapterCore, GattWiring {
   readonly charNotifyUuid = CHR_RESULTS;
   readonly charWriteUuid = CHR_CONTROL;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   private ctx: ConnectionContext | null = null;
 

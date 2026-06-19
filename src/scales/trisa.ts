@@ -70,8 +70,6 @@ export class TrisaAdapter implements ScaleAdapterCore, GattWiring, MultiCharNoti
   readonly charWriteUuid = CHR_DOWNLOAD;
 
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   readonly characteristics: CharacteristicBinding[] = [
     // Trisa-only measurement char.

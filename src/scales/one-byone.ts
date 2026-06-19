@@ -32,8 +32,6 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
   readonly charNotifyUuid = uuid16(0xfff4);
   readonly charWriteUuid = uuid16(0xfff1);
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   matches(device: BleDeviceInfo): boolean {
     return matchesDescriptor(device, this.match);

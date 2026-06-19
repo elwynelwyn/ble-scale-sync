@@ -30,8 +30,6 @@ export class HoffenAdapter implements ScaleAdapterCore, GattWiring {
   readonly charNotifyUuid = uuid16(0xffb2);
   readonly charWriteUuid = uuid16(0xffb2);
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   private cachedFat = 0;
   private cachedWater = 0;

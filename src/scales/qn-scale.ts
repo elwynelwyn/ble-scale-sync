@@ -130,8 +130,6 @@ export class QnScaleAdapter implements ScaleAdapterCore, GattWiring, BroadcastSo
   readonly altCharNotifyUuid = CHR_NOTIFY_T1;
   readonly altCharWriteUuid = CHR_WRITE_T1;
   readonly normalizesWeight = true;
-  readonly unlockCommand: number[] = [];
-  readonly unlockIntervalMs = 0;
 
   /**
    * Weight divisor: 100 (Type 1 default) or 10 (Type 2).
