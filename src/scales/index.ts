@@ -26,6 +26,7 @@ import { HoffenAdapter } from './hoffen.js';
 import { SenssunAdapter } from './senssun.js';
 import { EufyP2Adapter } from './eufy-p2.js';
 import { StandardGattScaleAdapter } from './standard-gatt.js';
+import { registerExclusionRegistry } from './derived-excludes.js';
 
 export const adapters: ScaleAdapter[] = [
   // Specific adapters first — they match by device name before the generic one.
@@ -70,3 +71,7 @@ export const adapters: ScaleAdapter[] = [
   // Generic standard GATT adapter last — matches by service UUID / brand names
   new StandardGattScaleAdapter(),
 ];
+
+// Provide the assembled registry to the generic adapter's exclusion derivation
+// (StandardGattScaleAdapter excludes any name a more specific adapter claims).
+registerExclusionRegistry(adapters);
