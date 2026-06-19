@@ -463,13 +463,20 @@ class BleBridge:
         if self._conn is None and last_exc is not None:
             raise last_exc
         self._chars = {}
-        chars_info = []
 
-        try:
-            services = await asyncio.wait_for(self._conn.services(), 10)
-            for service in services:
-                chars = await asyncio.wait_for(service.characteristics(), 10)
-                for char in chars:
+        # aioble's services()/characteristics() return ClientDiscover async
+        # iterators, not coroutines, so they must be driven with `async for`.
+        # Wrapping them in asyncio.wait_for() called create_task() on a
+        # non-coroutine and raised "TypeError: coroutine expected", which
+        # escaped the timeout handler and stranded the autonomous connect in
+        # main.py's retry loop (#231). aioble's own per-call timeout_ms is an
+        # unimplemented TODO (ClientDiscover.__anext__ waits on an IRQ flag with
+        # no timeout), so one asyncio.wait_for around the whole discovery is
+        # what actually bounds a stalled peer.
+        async def _discover_chars():
+            chars_info = []
+            async for service in self._conn.services():
+                async for char in service.characteristics():
                     uuid_str = _norm_uuid(char.uuid)
                     self._chars[uuid_str] = char
                     props = []
@@ -484,8 +491,16 @@ class BleBridge:
                     if char.properties & bluetooth.FLAG_INDICATE:
                         props.append("indicate")
                     chars_info.append({"uuid": uuid_str, "properties": props})
+            return chars_info
+
+        try:
+            chars_info = await asyncio.wait_for(_discover_chars(), 10)
         except asyncio.TimeoutError:
             print(f"Service discovery timed out for {address}")
+            await self.disconnect()
+            raise
+        except Exception as e:
+            print(f"Service discovery failed for {address}: {type(e).__name__}: {e}")
             await self.disconnect()
             raise
 
