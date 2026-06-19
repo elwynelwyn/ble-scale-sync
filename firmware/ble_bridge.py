@@ -14,16 +14,24 @@ _ble = bluetooth.BLE()
 # Bluetooth Base UUID suffix (matches Node.js normalizeUuid)
 _BT_BASE_SUFFIX = "00001000800000805f9b34fb"
 
+# Always-on conservative crash floor for the pre-connect IDF-heap guard (#139).
+# The observed crash is at free=392 largest=336. A BLE central connection plus
+# GATT discovery needs kilobytes across several distinct-sized allocations
+# (estimated 4 to 12 KB, never measured on this build), so a floor far above
+# 336/392 yet far below 4 KB can only ever trip the pathological near-zero case
+# and can never refuse a connect that could have succeeded. Deciding which
+# connects are winnable is left to the board tunables, which default to 0.
+CRASH_FLOOR_LARGEST = 1024
+CRASH_FLOOR_FREE = 2048
 
-def _log_idf_heap(when):
-    """Log ESP-IDF heap headroom (best-effort, no-op off-device).
+
+def _read_idf_heap():
+    """Return (free, largest) ESP-IDF data-heap bytes on-device, None off-device.
 
     NimBLE allocates its connection structures from the ESP-IDF heap, which is
-    separate from the MicroPython GC heap. On a no-PSRAM classic ESP32 this heap
-    can be exhausted by WiFi + MQTT, so a GATT connect fails to allocate and
-    NimBLE aborts with a C-level semaphore assertion (#139). Logging free + the
-    largest contiguous block right before connect tells a RAM ceiling (tiny
-    `largest`) apart from a radio-coexistence timeout (healthy `largest`).
+    separate from the MicroPython GC heap. Reading it requires the frozen
+    `esp32` builtin, absent on a host, so this returns None there and every
+    caller treats None as "cannot read, do not gate" (#139).
     """
     try:
         import esp32
@@ -31,9 +39,30 @@ def _log_idf_heap(when):
         regions = esp32.idf_heap_info(esp32.HEAP_DATA)
         free = sum(r[1] for r in regions)
         largest = max(r[2] for r in regions)
-        print("IDF heap %s: free=%d largest=%d" % (when, free, largest))
+        return (free, largest)
     except Exception:
-        pass
+        return None
+
+
+def _log_idf_heap(when):
+    """Log ESP-IDF heap headroom (best-effort, no-op off-device). See
+    _read_idf_heap for why the read can be absent. Tiny `largest` here tells a
+    RAM ceiling apart from a radio-coexistence timeout (healthy `largest`)."""
+    heap = _read_idf_heap()
+    if heap is not None:
+        free, largest = heap
+        print("IDF heap %s: free=%d largest=%d" % (when, free, largest))
+
+
+def _should_skip_connect(free, largest, min_free, min_largest):
+    """Pure crash-floor decision (#139): True when the IDF heap is too low to
+    attempt a GATT connect. Gates the largest contiguous block AND the free
+    total together, because connection bring-up performs several
+    distinct-sized allocations that must all land, so a largest-only check is
+    structurally insufficient. min_free / min_largest are the EFFECTIVE floors
+    (max of the always-on crash floor and the board tunable); this function is
+    host-testable and does not read the heap itself."""
+    return largest < min_largest or free < min_free
 
 
 def _norm_uuid(uuid):
