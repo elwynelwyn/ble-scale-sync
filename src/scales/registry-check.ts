@@ -105,6 +105,7 @@ export function checkRegistryIntegrity(adapters: readonly ScaleAdapter[]): Regis
     ['QN Scale', 'Renpho ES-WBE28'],
     ['Beurer BF720/BF105', 'Xiaomi Mi Scale 2'],
     ['Robi S9', 'MGB (Swan/Icomon/YG)'],
+    ['1byone (Eufy)', 'Inlife'],
   ];
   for (const [hi, lo] of INVARIANTS) {
     const a = byName.get(hi);

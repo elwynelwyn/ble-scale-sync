@@ -25,7 +25,7 @@ import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
 export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = '1byone (Eufy)';
   readonly match: MatchDescriptor = {
-    priority: 70,
+    priority: 95,
     names: { includes: ['t9146', 't9147', 't9120', 'health scale'] },
     charUuids: ['fff4'],
   };

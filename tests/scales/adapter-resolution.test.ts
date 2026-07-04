@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { adapters } from '../../src/scales/index.js';
+import { resolveAdapter } from '../../src/scales/resolve.js';
 import { uuid16 } from '../../src/scales/body-comp-helpers.js';
 import type { BleDeviceInfo } from '../../src/interfaces/scale-adapter.js';
 
@@ -40,6 +41,31 @@ describe('adapter resolution (#177 0xFFF0 collision)', () => {
     };
     const matched = adapters.find((a) => a.matches(info));
     expect(matched?.name).toBe('Beurer BF720/BF105');
+  });
+});
+
+// Pre-connect variant of #177: a T9146 scan result has a name and the
+// advertised 0xFFF0 service but no characteristicUuids yet (those only exist
+// post-GATT-connect), so it fell to Inlife's bare-0xFFF0 fallback, which
+// outranked 1byone (priority 90 vs 70). Uses resolveAdapter — the
+// priority-ordered resolver production uses — since priority is the fix.
+describe('adapter resolution (pre-connect T9146 vs Inlife 0xFFF0 fallback)', () => {
+  it('resolves a T9146 pre-connect scan result (name + fff0, no chars yet) to "1byone (Eufy)"', () => {
+    const info: BleDeviceInfo = {
+      localName: 'eufy T9146',
+      serviceUuids: [uuid16(0xfff0)],
+    };
+    const matched = resolveAdapter(info, adapters);
+    expect(matched?.name).toBe('1byone (Eufy)');
+  });
+
+  it('does not regress a real Inlife device pre-connect (unknown name, fff0 only) -> "Inlife"', () => {
+    const info: BleDeviceInfo = {
+      localName: 'Unknown',
+      serviceUuids: [uuid16(0xfff0)],
+    };
+    const matched = resolveAdapter(info, adapters);
+    expect(matched?.name).toBe('Inlife');
   });
 });
 
