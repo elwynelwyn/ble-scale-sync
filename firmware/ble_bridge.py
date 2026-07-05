@@ -65,6 +65,14 @@ def _should_skip_connect(free, largest, min_free, min_largest):
     return largest < min_largest or free < min_free
 
 
+def _describe_exc(e):
+    """Readable exception text. MicroPython's str() is empty for many built-in
+    exceptions (e.g. asyncio.TimeoutError), so fall back to the type name —
+    otherwise failures log as blank. Mirrors main.py's describe_exc; kept as a
+    tiny local copy to avoid a ble_bridge <-> main import cycle."""
+    return str(e) or type(e).__name__
+
+
 def _norm_uuid(uuid):
     """Convert MicroPython UUID to normalized 32-char hex (matches Node.js normalizeUuid)."""
     s = str(uuid)
@@ -572,21 +580,47 @@ class BleBridge:
         return {"chars": chars_info}
 
     async def start_notify(self, uuid_str, publish_fn):
-        """Start forwarding notifications from a characteristic via publish_fn."""
+        """Enable notifications on a characteristic and forward them via publish_fn.
+
+        Writes the CCCD (0x2902) via aioble's char.subscribe(notify=True) BEFORE
+        spawning the forwarding loop: char.notified() alone only registers IRQ
+        routing and never writes the CCCD, so a spec-compliant peripheral (e.g.
+        Eufy C1 T9146) never sends anything. Raises on unknown uuid or CCCD-write
+        failure so callers can relay the error to the host.
+        """
         char = self._chars.get(uuid_str)
         if not char:
-            return
+            print(f"start_notify: unknown characteristic {uuid_str}")
+            raise ValueError("start_notify: unknown characteristic %s" % uuid_str)
+
+        try:
+            await char.subscribe(notify=True)
+        except Exception as e:
+            # aioble raises ValueError("CCCD not found") when the descriptor is
+            # absent, GattError on a write failure, or a timeout on a stalled
+            # peer. No notify task exists yet, so nothing to clean up.
+            print(f"start_notify: subscribe failed for {uuid_str}: {_describe_exc(e)}")
+            raise
 
         async def _notify_loop():
             try:
                 while self._conn and self._conn.is_connected():
-                    data = await char.notified(timeout_ms=10000)
+                    try:
+                        data = await char.notified(timeout_ms=10000)
+                    except asyncio.TimeoutError:
+                        # Silence is normal (the scale idles between weigh-ins):
+                        # aioble's DeviceTimeout raises asyncio.TimeoutError when
+                        # no notification arrives in the window. Keep waiting; a
+                        # disconnect raises DeviceDisconnectedError instead, which
+                        # reaches the outer handler so the disconnect-relay
+                        # epilogue below still fires.
+                        continue
                     if data:
                         await publish_fn(uuid_str, bytes(data))
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                print(f"Notify loop error ({uuid_str}): {e}")
+                print(f"Notify loop error ({uuid_str}): {_describe_exc(e)}")
             # Fire disconnect callback once if connection was lost (not cancelled)
             if not self._disconnect_fired and self._conn and not self._conn.is_connected():
                 self._disconnect_fired = True

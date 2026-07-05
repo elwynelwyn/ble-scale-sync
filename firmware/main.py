@@ -238,8 +238,13 @@ async def _auto_gatt_connect(mac, addr_type):
             for char_info in result["chars"]:
                 if "notify" in char_info["properties"]:
                     uuid_str = char_info["uuid"]
-                    await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
-                    print(f"Auto-connect: notify enabled for {uuid_str}")
+                    try:
+                        await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+                        print(f"Auto-connect: notify enabled for {uuid_str}")
+                    except Exception as e:
+                        # A CCCD failure on one char must not abort the whole
+                        # connect; log and continue with the remaining chars.
+                        print(f"Auto-connect: notify failed for {uuid_str}: {describe_exc(e)}")
 
         bridge.set_on_disconnect(lambda: _pending.append(("__ble_disconnected__", b"")))
 
@@ -432,7 +437,11 @@ async def handle_subscribe(uuid_str):
 
     The host publishes subscribe/<uuid> AFTER it has subscribed to the MQTT
     notify/<uuid> topic, so the firmware-triggered kickoff frame (QN 0x12) always
-    has a listener. Mirrors native char.subscribe() ordering over the proxy."""
+    has a listener. Mirrors native char.subscribe() ordering over the proxy.
+
+    start_notify raises on unknown uuid / CCCD-write failure; the exception
+    propagates to the command loop, which publishes it on the error topic, so
+    the success line below only prints on real success."""
     await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
     print(f"Subscribe: notify enabled for {uuid_str}")
 
@@ -474,7 +483,12 @@ async def handle_connect(payload):
             for char_info in result["chars"]:
                 if "notify" in char_info["properties"]:
                     uuid_str = char_info["uuid"]
-                    await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+                    try:
+                        await bridge.start_notify(uuid_str, make_publish_fn(uuid_str))
+                    except Exception as e:
+                        # A CCCD failure on one char must not abort the whole
+                        # connect; log and continue with the remaining chars.
+                        print(f"Connect: notify failed for {uuid_str}: {describe_exc(e)}")
 
         bridge.set_on_disconnect(lambda: _pending.append(("__ble_disconnected__", b"")))
         await client.publish(topic("connected"), json.dumps(result), qos=0)
