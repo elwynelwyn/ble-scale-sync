@@ -37,9 +37,9 @@ CONNECT_MIN_IDF_FREE = 0
 AGGRESSIVE_GC = False
 GC_INTERVAL = 1000  # infrequent GC
 
-# No speaker
-HAS_BEEP = False
-BEEP_PINS = None
+# MAX98357A I2S amp + speaker
+HAS_BEEP = True
+BEEP_PINS = {"sck": 4, "ws": 5, "sd": 6}  # BCLK=GPIO4, LRC/WS=GPIO5, DIN=GPIO6
 
 # No display
 HAS_DISPLAY = False
