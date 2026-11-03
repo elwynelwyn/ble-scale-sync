@@ -917,9 +917,10 @@
     },
     "charNotifyUuid": "0000fff400001000800000805f9b34fb",
     "charWriteUuid": "0000fff100001000800000805f9b34fb",
-    "completionHoldMs": 3000,
+    "completionHoldMs": 12000,
     "hooks": [
       "onConnected",
+      "onSessionEnd",
       "isFinal"
     ]
   },

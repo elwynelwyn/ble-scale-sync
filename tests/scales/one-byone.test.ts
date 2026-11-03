@@ -6,7 +6,10 @@ import {
   makeConnectionContext,
   assertPayloadRanges,
 } from '../helpers/scale-test-utils.js';
-import { uuid16, WEIGHT_ONLY_HOLD_MS } from '../../src/scales/body-comp-helpers.js';
+import { uuid16, xorChecksum, WEIGHT_ONLY_HOLD_MS } from '../../src/scales/body-comp-helpers.js';
+import { hex } from '../helpers/replay/trace.js';
+import { replaySession } from '../helpers/replay/session.js';
+import { session as t9146 } from '../fixtures/onebyone/t9146.js';
 
 // ─── OneByoneAdapter ─────────────────────────────────────────────────────────
 
@@ -70,165 +73,194 @@ describe('OneByoneAdapter', () => {
     });
   });
 
+  // Frames from the T9146 capture (tests/fixtures/onebyone/t9146.ts).
+  const MEASURING = hex('cf00002a210000000001c5'); // 84.90 kg, status measuring
+  const SETTLED = hex('cf000052210000000101bc'); // 85.30 kg, [8] settled, no impedance
+  const FINAL = hex('cfa410522170751b010017'); // 85.30 kg, 426.0 ohm, status final
+  const RECORD = hex('cfb81052211d13cd0000d707ea0704100726'); // 85.30 kg, 428.0 ohm, 2026-07-04 16:07:38
+
+  /** A copy of `base` with `mutate` applied and the XOR at [10] recomputed. */
+  function withChecksum(base: Buffer, mutate: (buf: Buffer) => void): Buffer {
+    const buf = Buffer.from(base);
+    mutate(buf);
+    buf[10] = xorChecksum(buf, 0, 10);
+    return buf;
+  }
+
+  /** Run onConnected under fake timers; returns its write mock, cleared. */
+  async function connect(adapter: OneByoneAdapter) {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.useFakeTimers();
+    try {
+      const done = adapter.onConnected(makeConnectionContext({ write }));
+      await vi.advanceTimersByTimeAsync(1000);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    write.mockClear();
+    return write;
+  }
+
   describe('onConnected()', () => {
-    it('sends FD 37 mode/unit command then clock sync', async () => {
-      const adapter = makeAdapter();
-      const writeFn = vi.fn().mockResolvedValue(undefined);
+    it('sends the clock sync, then the f2 00 record request, both with response', async () => {
+      vi.useFakeTimers({ now: new Date(2026, 6, 4, 17, 16, 11, 500) });
+      try {
+        const adapter = makeAdapter();
+        const write = vi.fn().mockResolvedValue(undefined);
+        const done = adapter.onConnected(makeConnectionContext({ write }));
+        await vi.advanceTimersByTimeAsync(1000);
+        await done;
 
-      const ctx = makeConnectionContext({
-        write: writeFn,
-        read: vi.fn(),
-        subscribe: vi.fn(),
-        profile: defaultProfile(),
-      });
-
-      await adapter.onConnected!(ctx);
-
-      expect(writeFn).toHaveBeenCalledTimes(2);
-
-      // Call 1: FD 37 mode/unit command with XOR checksum
-      const [charUuid1, data1, withResponse1] = writeFn.mock.calls[0];
-      expect(charUuid1).toBe(adapter.charWriteUuid);
-      expect(withResponse1).toBe(false);
-      expect(data1[0]).toBe(0xfd);
-      expect(data1[1]).toBe(0x37);
-      expect(data1.length).toBe(12); // 11 bytes + XOR checksum
-      // Verify XOR checksum
-      let xor = 0;
-      for (let i = 0; i < 11; i++) xor ^= data1[i];
-      expect(data1[11]).toBe(xor & 0xff);
-
-      // Call 2: clock sync
-      const [charUuid2, data2, withResponse2] = writeFn.mock.calls[1];
-      expect(charUuid2).toBe(adapter.charWriteUuid);
-      expect(withResponse2).toBe(false);
-      expect(data2[0]).toBe(0xf1);
-      expect(data2.length).toBe(8);
-      // Year should be current year
-      const year = (data2[1] << 8) | data2[2];
-      expect(year).toBe(new Date().getFullYear());
+        // Not the app's fd 00 01 config command: it sets the display unit.
+        expect(write.mock.calls).toEqual([
+          [adapter.charWriteUuid, [0xf1, 0x07, 0xea, 0x07, 0x04, 0x11, 0x10, 0x0c], true],
+          [adapter.charWriteUuid, [0xf2, 0x00], true],
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
   describe('parseNotification()', () => {
-    it('parses 0xCF frame with weight and impedance', () => {
+    it('reads a live frame that is still measuring, without completing', () => {
       const adapter = makeAdapter();
-      const buf = Buffer.alloc(10);
-      buf[0] = 0xcf;
-      // impedance raw: (data[2]<<8) + data[1] = (0x01<<8) + 0xF4 = 500 → * 0.1 = 50.0
-      buf[1] = 0xf4;
-      buf[2] = 0x01;
-      buf.writeUInt16LE(8000, 3); // weight = 8000 / 100 = 80.0 kg
-      buf[9] = 0; // not invalid
-
-      const reading = adapter.parseNotification(buf);
-      expect(reading).not.toBeNull();
-      expect(reading!.weight).toBe(80);
-      expect(reading!.impedance).toBeCloseTo(50, 1);
+      const reading = adapter.parseNotification(MEASURING)!;
+      expect(reading).toEqual({ weight: 84.9, impedance: 0 });
+      expect(adapter.isComplete(reading)).toBe(false);
     });
 
-    it('impedance is 0 when byte[9] = 1', () => {
+    it('completes on a settled frame without impedance, but holds for the impedance', () => {
       const adapter = makeAdapter();
-      const buf = Buffer.alloc(10);
-      buf[0] = 0xcf;
-      buf[1] = 0xf4;
-      buf[2] = 0x01;
-      buf.writeUInt16LE(8000, 3);
-      buf[9] = 1; // impedance invalid
-
-      const reading = adapter.parseNotification(buf);
-      expect(reading).not.toBeNull();
-      expect(reading!.impedance).toBe(0);
+      const reading = adapter.parseNotification(SETTLED)!;
+      expect(reading).toEqual({ weight: 85.3, impedance: 0 });
+      expect(adapter.isComplete(reading)).toBe(true);
+      expect(adapter.isFinal(reading)).toBe(false);
+      expect(adapter.completionHoldMs).toBe(12_000);
     });
 
-    it('impedance is 0 when raw value is 0', () => {
+    it('resolves on the final frame carrying the impedance', () => {
       const adapter = makeAdapter();
-      const buf = Buffer.alloc(10);
-      buf[0] = 0xcf;
-      buf[1] = 0x00;
-      buf[2] = 0x00;
-      buf.writeUInt16LE(8000, 3);
-      buf[9] = 0;
-
-      const reading = adapter.parseNotification(buf);
-      expect(reading).not.toBeNull();
-      expect(reading!.impedance).toBe(0);
+      const reading = adapter.parseNotification(FINAL)!;
+      expect(reading.weight).toBe(85.3);
+      expect(reading.impedance).toBeCloseTo(426.0, 1);
+      expect(adapter.isComplete(reading)).toBe(true);
+      expect(adapter.isFinal(reading)).toBe(true);
     });
 
-    it('returns null for wrong header', () => {
+    it('completes on status final even without the settled flag at [8]', () => {
       const adapter = makeAdapter();
-      const buf = Buffer.alloc(10);
-      buf[0] = 0xce; // wrong
+      const reading = adapter.parseNotification(withChecksum(FINAL, (b) => (b[8] = 0)))!;
+      expect(adapter.isComplete(reading)).toBe(true);
+    });
+
+    it('decides completion per frame: a measuring frame after a settled one does not complete', () => {
+      const adapter = makeAdapter();
+      expect(adapter.isComplete(adapter.parseNotification(SETTLED)!)).toBe(true);
+      expect(adapter.isComplete(adapter.parseNotification(MEASURING)!)).toBe(false);
+    });
+
+    it('reads a stored record with its time, flagged as from memory', () => {
+      const adapter = makeAdapter();
+      const reading = adapter.parseNotification(RECORD)!;
+      expect(reading.weight).toBe(85.3);
+      expect(reading.impedance).toBeCloseTo(428.0, 1);
+      expect(reading.timestamp).toEqual(new Date(2026, 6, 4, 16, 7, 38));
+      expect(reading.fromMemory).toBe(true);
+      expect(adapter.isComplete(reading)).toBe(true);
+    });
+
+    it('drops a stored record whose date is not plausible', () => {
+      const adapter = makeAdapter();
+      const month13 = Buffer.from(RECORD);
+      month13[13] = 13;
+      expect(adapter.parseNotification(month13)).toBeNull();
+    });
+
+    it('drops a frame with a bad checksum', () => {
+      const adapter = makeAdapter();
+      const buf = Buffer.from(FINAL);
+      buf[10] ^= 0xff;
       expect(adapter.parseNotification(buf)).toBeNull();
     });
 
-    it('returns null for too-short buffer', () => {
+    it('drops a frame with status 0x02, over the weight limit', () => {
       const adapter = makeAdapter();
-      expect(adapter.parseNotification(Buffer.alloc(4))).toBeNull();
+      expect(adapter.parseNotification(withChecksum(FINAL, (b) => (b[9] = 0x02)))).toBeNull();
+    });
+
+    it.each(['f100', 'f200', 'f201', 'f300'])('returns null for the 2-byte frame %s', (h) => {
+      expect(makeAdapter().parseNotification(hex(h))).toBeNull();
+    });
+
+    it('acks the f2 00 end-of-history marker with one f2 01, with response', async () => {
+      const adapter = makeAdapter();
+      const write = await connect(adapter);
+      adapter.parseNotification(hex('f200'));
+      expect(write.mock.calls).toEqual([[adapter.charWriteUuid, [0xf2, 0x01], true]]);
+    });
+
+    it('writes nothing for f2 00 once the session has ended', async () => {
+      const adapter = makeAdapter();
+      const write = await connect(adapter);
+      adapter.onSessionEnd();
+      adapter.parseNotification(hex('f200'));
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('returns null for a wrong header or a short frame', () => {
+      const adapter = makeAdapter();
+      const wrongHeader = Buffer.from(FINAL);
+      wrongHeader[0] = 0xce;
+      expect(adapter.parseNotification(wrongHeader)).toBeNull();
+      expect(adapter.parseNotification(Buffer.alloc(0))).toBeNull();
+      expect(adapter.parseNotification(hex('cf'))).toBeNull();
+      expect(adapter.parseNotification(FINAL.subarray(0, 10))).toBeNull();
     });
   });
 
-  describe('isComplete()', () => {
-    it('returns true when weight > 0', () => {
-      const adapter = makeAdapter();
-      expect(adapter.isComplete({ weight: 80, impedance: 0 })).toBe(true);
+  describe('captured T9146 weigh-in through waitForRawReading', () => {
+    const trace = t9146.traces['t9146-weigh-in'];
+    const FINAL_AT_MS = trace.steps.at(-1)!.atMs;
+
+    it('resolves on the impedance frame, before the hold runs out', async () => {
+      const r = await replaySession(makeAdapter(), trace, t9146);
+      expect(r.settled).toEqual({ by: 'reading', atMs: FINAL_AT_MS });
+      expect(r.reading!.weight).toBe(85.3);
+      expect(r.reading!.impedance).toBeCloseTo(426.0, 1);
+      expect(r.reading!.timestamp).toBeUndefined();
     });
 
-    it('returns false when weight is 0', () => {
-      const adapter = makeAdapter();
-      expect(adapter.isComplete({ weight: 0, impedance: 0 })).toBe(false);
-    });
-  });
-
-  describe('weight-stability gate (#284)', () => {
-    function cfFrame(weightKg: number): Buffer {
-      const buf = Buffer.alloc(10);
-      buf[0] = 0xcf;
-      buf.writeUInt16LE(Math.round(weightKg * 100), 3);
-      buf[9] = 1; // impedance invalid — isolate the weight-stability behaviour
-      return buf;
-    }
-
-    it('resolves only once two consecutive frames report the same weight', () => {
-      const adapter = makeAdapter();
-
-      const f1 = adapter.parseNotification(cfFrame(80.2))!;
-      expect(adapter.isComplete(f1)).toBe(true); // permissive: arms the hold
-      expect(adapter.isFinal!(f1)).toBe(false);
-
-      const f2 = adapter.parseNotification(cfFrame(80.0))!;
-      expect(adapter.isFinal!(f2)).toBe(false); // changed
-
-      const f3 = adapter.parseNotification(cfFrame(80.0))!;
-      expect(adapter.isFinal!(f3)).toBe(true); // stable
-      expect(adapter.completionHoldMs).toBeGreaterThan(0);
+    it('hands over the nine stored records as history, oldest first', async () => {
+      const r = await replaySession(makeAdapter(), trace, t9146);
+      expect(r.history).toHaveLength(9);
+      expect(r.history.every((h) => h.fromMemory === true)).toBe(true);
+      expect(r.history[0].timestamp).toEqual(new Date(2026, 6, 4, 16, 7, 38));
+      expect(r.history[8].timestamp).toEqual(new Date(2026, 6, 4, 17, 15, 45));
     });
 
-    it('re-arms stability on reconnect', async () => {
-      const adapter = makeAdapter();
-      const ctx = makeConnectionContext({
-        write: async () => {},
-        read: async () => Buffer.alloc(0),
-        subscribe: async () => {},
-        profile: defaultProfile(),
-        deviceAddress: 'AA:BB:CC:DD:EE:FF',
-      });
-
-      adapter.parseNotification(cfFrame(80));
-      expect(adapter.isFinal!(adapter.parseNotification(cfFrame(80))!)).toBe(true);
-
-      await adapter.onConnected(ctx);
-      expect(adapter.isFinal!(adapter.parseNotification(cfFrame(80))!)).toBe(false);
+    it('writes the clock sync, f2 00, then f2 01 after the end-of-history marker', async () => {
+      const r = await replaySession(makeAdapter(), trace, t9146);
+      const endOfHistoryAt = trace.steps.find((s) => s.hex === 'f200')!.atMs;
+      expect(r.writes.map((w) => [w.hex, w.withResponse])).toEqual([
+        ['f107ea0704111000', true],
+        ['f200', true],
+        ['f201', true],
+      ]);
+      expect(r.writes[2].atMs).toBe(endOfHistoryAt);
     });
   });
 
   describe('computeMetrics()', () => {
-    it('returns valid BodyComposition', () => {
+    it('runs BIA on the impedance of the captured final frame', () => {
       const adapter = makeAdapter();
       const profile = defaultProfile();
-      const payload = adapter.computeMetrics({ weight: 80, impedance: 500 }, profile);
-      expect(payload.weight).toBe(80);
+      const payload = adapter.computeMetrics(adapter.parseNotification(FINAL)!, profile);
+      expect(payload.weight).toBe(85.3);
       assertPayloadRanges(payload);
+      const bmiOnly = adapter.computeMetrics({ weight: 85.3, impedance: 0 }, profile);
+      expect(payload.bodyFatPercent).not.toBe(bmiOnly.bodyFatPercent);
     });
 
     it('returns zero weight in payload for zero weight input', () => {
@@ -424,10 +456,6 @@ describe('1byone / Eufy BIA from the parsed impedance (#386)', () => {
   });
 
   it('falls back to the BMI estimate when the impedance is not a body', () => {
-    // 50 is what this adapter's own synthetic fixture produces from a raw
-    // 500, because of the `* 0.1` it inherited from openScale. If that factor
-    // is wrong, a real body lands here and is refused rather than published as
-    // a 4 % body fat.
     for (const impedance of [1, 149, 1201, 65535]) {
       const payload = new OneByoneAdapter().computeMetrics(
         { weight: 80, impedance },
@@ -496,9 +524,8 @@ describe('1byone Scale (new protocol) BIA from the parsed impedance (#386)', () 
 
 describe('1byone / Eufy: the 0.1 factor and the band (#386)', () => {
   it('refuses a 50 ohm reading, which is what raw 500 decodes to here', () => {
-    // Not a hypothetical: tests above assert exactly 50.0 from raw 500. A body
-    // does not read 50 ohm, so either the factor is wrong or that fixture is
-    // not a real frame. Either way it must not drive a body composition.
+    // The capture's final frame carries raw 4260, 426.0 ohm, so the 0.1 holds
+    // for a body. A raw 500 is not one and must not drive a body composition.
     const payload = new OneByoneAdapter().computeMetrics(
       { weight: 80, impedance: 50 },
       defaultProfile(),
