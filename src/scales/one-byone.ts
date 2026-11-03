@@ -48,7 +48,7 @@ class OneByoneSession {
 export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
   readonly name = '1byone (Eufy)';
   readonly match: MatchDescriptor = {
-    priority: 70,
+    priority: 91,
     custom: true,
     names: { includes: ['t9146', 't9147', 't9120', 'health scale'] },
     charUuids: ['fff4'],

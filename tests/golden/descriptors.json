@@ -901,7 +901,7 @@
   {
     "name": "1byone (Eufy)",
     "match": {
-      "priority": 70,
+      "priority": 91,
       "custom": true,
       "names": {
         "includes": [
