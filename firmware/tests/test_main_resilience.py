@@ -67,6 +67,9 @@ if "ble_bridge" not in sys.modules:
         drain_results=lambda: [],
         _raw_results=[],
     )
+    _ble_bridge_stub.ScaleBeepGate = lambda: types.SimpleNamespace(update=lambda *a: None)
+    _ble_bridge_stub.ResultTimer = lambda: types.SimpleNamespace()
+    _ble_bridge_stub.PROBLEM_BEEP = (400, 500, 2)
     sys.modules["ble_bridge"] = _ble_bridge_stub
 
 _config_path = os.path.join(_FIRMWARE_DIR, "config.json")

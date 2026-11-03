@@ -61,6 +61,9 @@ _ble_bridge.BleBridge = lambda: types.SimpleNamespace(
     drain_results=lambda: [],
     _raw_results=[],
 )
+_ble_bridge.ScaleBeepGate = lambda: types.SimpleNamespace(update=lambda *a: None)
+_ble_bridge.ResultTimer = lambda: types.SimpleNamespace()
+_ble_bridge.PROBLEM_BEEP = (400, 500, 2)
 sys.modules["ble_bridge"] = _ble_bridge
 
 # Write a minimal config.json for main.py import
@@ -491,16 +494,19 @@ class TestPassiveScales(unittest.TestCase):
         # _check_scale_beep keys on _scale_macs only, so a passive scale keeps
         # its instant beep.
         self._config({"scales": [_MAC_STR], "passive": [_MAC_STR]})
-        orig_time, orig_beep = main.time, main._last_beep_time
-        # MicroPython's tick helpers, stubbed on a stand-in so the real time
-        # module is left untouched.
-        main.time = types.SimpleNamespace(ticks_ms=lambda: 10**9, ticks_diff=lambda a, b: a - b)
-        main._last_beep_time = 0
+        seen_macs = []
+
+        def gate_update(results, macs, now):
+            seen_macs.append(set(macs))
+
+        orig_gate, orig_time = main._beep_gate, main.time
+        main._beep_gate = types.SimpleNamespace(update=gate_update)
+        main.time = types.SimpleNamespace(ticks_ms=lambda: 10**9)
         try:
             main._check_scale_beep([{"address": _MAC_STR}])
-            self.assertEqual(main._last_beep_time, 10**9)
         finally:
-            main.time, main._last_beep_time = orig_time, orig_beep
+            main._beep_gate, main.time = orig_gate, orig_time
+        self.assertEqual(seen_macs, [{_MAC_STR}])
 
 
 if __name__ == "__main__":

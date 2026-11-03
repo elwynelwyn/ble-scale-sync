@@ -11,7 +11,7 @@ import gc
 import time
 import board
 from mqtt_as import MQTTClient, config as mqtt_config
-from ble_bridge import BleBridge
+from ble_bridge import BleBridge, ScaleBeepGate, ResultTimer, PROBLEM_BEEP
 
 if board.HAS_BEEP:
     from beep import beep
@@ -132,9 +132,9 @@ _pending = []
 
 # Scale MAC detection for instant beep
 _scale_macs = set()
-# ticks_ms of the last scale beep, None when there is none within the debounce.
-_last_beep_time = None
-SCALE_BEEP_DEBOUNCE_MS = 60000
+_beep_gate = ScaleBeepGate()
+# Runs from the start beep until the server's result beep arrives.
+_result_timer = ResultTimer()
 
 # Autonomous GATT connect: ESP32 connects itself when a known scale MAC
 # appears in a scan, eliminating the MQTT round-trip latency (#201).
@@ -198,6 +198,15 @@ def on_message(topic_bytes, msg, retained):
         except Exception as e:
             print(f"Bad config payload: {e}")
         return
+    # Cancelled here, not when the command is processed: the main loop can be
+    # busy with a long handler while the result beep waits in the queue.
+    if t == topic("beep"):
+        now = time.ticks_ms()
+        elapsed = _result_timer.elapsed(now)
+        if elapsed is not None:
+            print("Result cue cancelled after %d ms" % elapsed)
+            _result_timer.cancel()
+        _beep_gate.finish(now)
     # Any host command counts as engagement with the current GATT session (#296).
     _last_host_activity = time.ticks_ms()
     if _gatt_session_armed:
@@ -359,36 +368,43 @@ async def _wait_not_busy(max_iters=60, sleep_ms=500):
 
 # ─── Autonomous scan loop ────────────────────────────────────────────────────
 
-def _beep_debounced(now):
-    """True while the last scale beep is under SCALE_BEEP_DEBOUNCE_MS old.
-
-    ticks_diff() is only meaningful within half the tick period (about 6.2
-    days on the ESP32 port) and turns negative past it, so an expired mark is
-    dropped here instead of being compared again later. Scan results arrive
-    every few seconds, which runs this long before any wrap.
-    """
-    global _last_beep_time
-    if _last_beep_time is None:
-        return False
-    if 0 <= time.ticks_diff(now, _last_beep_time) < SCALE_BEEP_DEBOUNCE_MS:
-        return True
-    _last_beep_time = None
-    return False
-
-
 def _check_scale_beep(results):
-    """Beep/display if a known scale MAC is present (60s debounce)."""
-    global _last_beep_time
-    if not _beep_debounced(time.ticks_ms()) and _scale_macs:
-        for r in results:
-            if r["address"] in _scale_macs:
-                _last_beep_time = time.ticks_ms()
-                print(f"Scale detected: {r['address']}")
-                if board.HAS_BEEP:
-                    beep()
-                if board.HAS_DISPLAY:
-                    ui.on_scale_detected(r["address"])
-                break
+    """Beep/display once per weigh-in, when a known scale reports a non-zero weight.
+
+    Wrap-safe: the gate clears `last_seen` at its 30 s re-arm and the timer clears
+    `started` on expiry, so no mark lives long enough to reach the ~6.2 day
+    ticks_diff limit.
+    """
+    now = time.ticks_ms()
+    hit = _beep_gate.update(results, _scale_macs, now)
+    if hit:
+        mac, weight = hit
+        print(f"Scale detected: {mac} {weight} kg")
+        if board.HAS_BEEP:
+            beep()
+            _result_timer.start(now)
+        if board.HAS_DISPLAY:
+            ui.on_scale_detected(mac)
+
+
+def _check_result_timeout():
+    """Play the problem sound when a weigh-in got no result beep in time."""
+    now = time.ticks_ms()
+    elapsed = _result_timer.elapsed(now)
+    if _result_timer.expired(now):
+        print("Result cue expired after %d ms, playing problem sound" % elapsed)
+        beep(*PROBLEM_BEEP)
+
+
+async def _result_watchdog():
+    """Check the result timer twice a second, independent of the scan loops
+    (which pause for GATT sessions) and of the MQTT command loop."""
+    while True:
+        await asyncio.sleep_ms(500)
+        try:
+            _check_result_timeout()
+        except Exception as e:
+            print(f"Result watchdog error: {describe_exc(e)}")
 
 
 def _auto_connect_allowed(mac):
@@ -485,6 +501,7 @@ def _resume_scanning():
     _scan_paused = False
     _gatt_session_armed = False
     _host_engaged = False
+    _beep_gate.last_seen = time.ticks_ms()
     if board.CONTINUOUS_SCAN:
         bridge.start_streaming()
 
@@ -1026,6 +1043,8 @@ async def main():
         ui.on_mqtt_change(True)
     # Start autonomous BLE scan loop
     asyncio.create_task(scan_loop())
+    if board.HAS_BEEP:
+        asyncio.create_task(_result_watchdog())
     gc_counter = 0
 
     while True:

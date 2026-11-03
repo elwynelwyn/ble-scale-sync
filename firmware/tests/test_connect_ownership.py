@@ -65,6 +65,9 @@ if "mqtt_as" not in sys.modules:
 
 _ble_bridge = types.ModuleType("ble_bridge")
 _ble_bridge.BleBridge = lambda: types.SimpleNamespace()
+_ble_bridge.ScaleBeepGate = lambda: types.SimpleNamespace()
+_ble_bridge.ResultTimer = lambda: types.SimpleNamespace()
+_ble_bridge.PROBLEM_BEEP = (400, 500, 2)
 
 _config_path = os.path.join(_FIRMWARE_DIR, "config.json")
 _config_existed = os.path.exists(_config_path)

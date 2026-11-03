@@ -193,7 +193,16 @@ With the embedded broker, publish its port: add `ports: ['1883:1883']` to the se
 Scale --BLE--> ESP32 --MQTT--> broker --MQTT--> BLE Scale Sync
 ```
 
-The ESP32 scans in a loop and publishes what it sees to `scan/results`. An ESP32-S3 scans without pause and publishes every 2 s. A classic ESP32 scans for 5 s (WROOM-32) or 8 s (Atom Echo), publishes, and waits 5 s, so its results arrive every 10 to 13 s; on these shared-radio boards BLE is switched off after each scan so Wi-Fi can recover. The firmware beeps when it sees a scale the server has told it about.
+The ESP32 scans in a loop and publishes what it sees to `scan/results`. An ESP32-S3 scans without pause and publishes every 2 s. A classic ESP32 scans for 5 s (WROOM-32) or 8 s (Atom Echo), publishes, and waits 5 s, so its results arrive every 10 to 13 s; on these shared-radio boards BLE is switched off after each scan so Wi-Fi can recover.
+
+Boards with a speaker play these sounds during a weigh-in:
+
+- **One beep** when a scale the server has told it about reports a non-zero weight, once per weigh-in. Tested with the Eufy T9146/T9147/T9120 and 1byone-style scales that broadcast the weight in their advertisement. Other scales don't trigger it.
+- **Two beeps** from the server when the reading is matched to a user. This includes a reading that arrives from the scale's memory within 2 minutes of being taken.
+- **Three low beeps** from the server when the weight matches nobody, or is out of range with `out_of_range: skip`.
+- **Two long low beeps** from the ESP32 when no result arrives within 40 s of the start beep, for example because the scale never connected or the server is down.
+
+The server sends the two result sounds in multi-user mode only. With a single user configured it sends no result beep, so the two long low beeps play after each weigh-in.
 
 A broadcast scale, such as the Xiaomi Mi Scale 2, is read from its advertisements and never connected, even when it also offers a GATT service. The server learns which scales are broadcast scales while it runs and forgets it on restart, so after a restart the ESP32 can try one connection to a known scale (from `ble.scale_mac` or an earlier reading) before an advertisement identifies it. A scale that accepts the connection is dropped as soon as its characteristics identify it. A scale that never accepts one, such as the Silvergear 108 or the `AAA00x` scales, holds the ESP32 for up to about 30 s with scanning paused, and the first weigh-in after a restart can be lost. If every scale on the proxy is a broadcast scale, set `auto_connect: false` under `mqtt_proxy`.
 
