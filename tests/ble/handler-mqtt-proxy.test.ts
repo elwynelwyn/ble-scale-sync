@@ -3244,13 +3244,14 @@ describe('handler-mqtt-proxy', () => {
         return origPublish(topic, payload);
       });
 
-      // Nameless advert carrying only the bare fff0 vendor service.
+      // An advert whose name no adapter claims, carrying only the bare fff0
+      // vendor service. A claimed name (T9120) settles it before discovery.
       mockClient._simulateMessage(
         `${PREFIX}/scan/results`,
         JSON.stringify([
           {
             address: 'BC:0F:B7:18:70:28',
-            name: 'eufy T9120',
+            name: 'eufy A1',
             rssi: -55,
             services: ['0000fff000001000800000805f9b34fb'],
           },

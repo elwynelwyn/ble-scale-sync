@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { adapters } from '../../src/scales/index.js';
+import { resolveAdapter, resolveAfterDiscovery } from '../../src/scales/resolve.js';
 import { uuid16 } from '../../src/scales/body-comp-helpers.js';
 import type { BleDeviceInfo } from '../../src/interfaces/scale-adapter.js';
 
@@ -40,6 +41,39 @@ describe('adapter resolution (#177 0xFFF0 collision)', () => {
     };
     const matched = adapters.find((a) => a.matches(info));
     expect(matched?.name).toBe('Beurer BF720/BF105');
+  });
+});
+
+// A T9146 scan result has its name and the advertised 0xFFF0 service but no
+// characteristics yet, so before discovery only the name can keep it away from
+// Inlife's bare 0xFFF0 fallback. Uses the resolvers production uses: the
+// priority-ordered resolveAdapter on a scan result, resolveAfterDiscovery once
+// the characteristics are known.
+describe('adapter resolution (T9146 before and after GATT discovery)', () => {
+  const T9146_ADVERT: BleDeviceInfo = { localName: 'eufy T9146', serviceUuids: [uuid16(0xfff0)] };
+  const T9146_CHARS = [uuid16(0xfff1), uuid16(0xfff4)];
+
+  it('resolves a named T9146 scan result (fff0, no chars yet) to "1byone (Eufy)"', () => {
+    expect(resolveAdapter(T9146_ADVERT, adapters)?.name).toBe('1byone (Eufy)');
+  });
+
+  it('resolves a named T9146 after discovery (fff1 + fff4) to "1byone (Eufy)"', () => {
+    const resolved = resolveAfterDiscovery(T9146_ADVERT, { characteristicUuids: T9146_CHARS });
+    expect(resolved?.name).toBe('1byone (Eufy)');
+  });
+
+  it('resolves a T9146 with no advertisement after discovery (fff1 + fff4) to "1byone (Eufy)"', () => {
+    // The ESP32 autonomous connect: no cached advertisement, characteristics only.
+    const resolved = resolveAfterDiscovery(
+      { localName: '', serviceUuids: [] },
+      { characteristicUuids: T9146_CHARS },
+    );
+    expect(resolved?.name).toBe('1byone (Eufy)');
+  });
+
+  it('still resolves an Inlife scan result (unknown name, fff0 only) to "Inlife"', () => {
+    const info: BleDeviceInfo = { localName: 'Unknown', serviceUuids: [uuid16(0xfff0)] };
+    expect(resolveAdapter(info, adapters)?.name).toBe('Inlife');
   });
 });
 

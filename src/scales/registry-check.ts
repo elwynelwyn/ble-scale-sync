@@ -79,6 +79,11 @@ export const ORDERING_INVARIANTS: ReadonlyArray<readonly [string, string]> = [
   // every transport that resolves after discovery hands the scale to Inlife
   // (#507). Custom on both sides, so the overlap check below is silent.
   ['Renpho ES-WBE28', 'Inlife'],
+  // A T9146 scan result carries its name and the 0xFFF0 service but no
+  // characteristics yet, which Inlife's bare 0xFFF0 fallback claims. Only the
+  // name tells them apart before discovery, so 1byone must outrank Inlife.
+  // Custom on both sides, so the overlap check below is silent.
+  ['1byone (Eufy)', 'Inlife'],
 ];
 
 /** Run structural checks over an adapter registry. Pure — no throw, no log. */

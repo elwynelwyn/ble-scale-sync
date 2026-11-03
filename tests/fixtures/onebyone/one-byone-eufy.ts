@@ -2,48 +2,51 @@ import type { SessionFixture } from '../../helpers/replay/session.js';
 import type { Trace } from '../../helpers/replay/trace.js';
 
 /**
- * 1byone (Eufy C1/P1/A1, "Health Scale"): the FD 37 mode/unit command and the
- * F1 clock (local time) at connect, both without response, then 0xCF frames
- * on FFF4 held until two in a row report the same weight (#284).
+ * 1byone (Eufy C1/P1/A1, "Health Scale"): the F1 clock (local time) and the
+ * F2 00 record request at connect, both with response, then 0xCF frames on
+ * FFF4. A settled frame completes the reading and holds the link up to 12 s
+ * for the frame carrying the impedance.
  *
- * No frame of this scale is on record (#177, #251 and #319 carry adverts and
- * errors, no notifications), so every trace is characterization, built as
- * tests/scales/one-byone.test.ts builds its frames: [1..2] impedance x10 (LE
- * as the adapter reads it), [3..4] weight x100 LE, [9] = 1 impedance invalid.
+ * Every trace is derived from the frames of the T9146 capture
+ * (tests/fixtures/onebyone/t9146.ts), rearranged to pin one behaviour each.
  */
 
-const W_80_0 = 'cf0000401f0000000001';
+const MEASURING = 'cf00002a210000000001c5'; // 84.90 kg, status measuring
+const SETTLED = 'cf000052210000000101bc'; // 85.30 kg, [8] settled, no impedance
+const FINAL = 'cfa410522170751b010017'; // 85.30 kg, 426.0 ohm, status final
 
 const traces: Record<string, Trace> = {
+  // No impedance frame (socks): the hold resolves the settled weight.
   'eufy-stable-weight': {
-    provenance: 'characterization',
-    source: 'tests/scales/one-byone.test.ts #284: 80.2, 80.0, 80.0 kg, impedance invalid',
+    provenance: 'derived',
+    source: 't9146.ts: one measuring and three settled frames, the impedance frame left out',
     steps: [
-      { atMs: 500, dir: 'rx', hex: 'cf0000541f0000000001' },
-      { atMs: 800, dir: 'rx', hex: W_80_0 },
-      { atMs: 1100, dir: 'rx', hex: W_80_0 },
+      { atMs: 500, dir: 'rx', hex: MEASURING },
+      { atMs: 800, dir: 'rx', hex: SETTLED },
+      { atMs: 1100, dir: 'rx', hex: SETTLED },
+      { atMs: 1400, dir: 'rx', hex: SETTLED },
     ],
   },
   'eufy-impedance': {
-    provenance: 'characterization',
-    source: 'made up: 80.0 kg twice with raw impedance 5000 (500.0 ohm), [9] = 0',
+    provenance: 'derived',
+    source: 't9146.ts: a settled frame, then the impedance frame 5 s later',
     steps: [
-      { atMs: 500, dir: 'rx', hex: 'cf8813401f0000000000' },
-      { atMs: 800, dir: 'rx', hex: 'cf8813401f0000000000' },
+      { atMs: 800, dir: 'rx', hex: SETTLED },
+      { atMs: 5800, dir: 'rx', hex: FINAL },
     ],
   },
-  // The weight never repeats: the 3 s hold resolves the last frame.
+  // Nothing after the settled frame is usable, so the hold resolves it.
   'eufy-hold-expiry': {
-    provenance: 'characterization',
+    provenance: 'derived',
     source:
-      'made up: 80.2, 80.0, 79.9, 80.1 kg, then nothing; a short and a wrong-header frame first',
+      't9146.ts: a settled frame, then the impedance frame with a bad checksum, with status ' +
+      '0x02 (over the limit), cut short and with a wrong header',
     steps: [
-      { atMs: 200, dir: 'rx', hex: 'cf000054' },
-      { atMs: 300, dir: 'rx', hex: 'ce0000541f0000000001' },
-      { atMs: 500, dir: 'rx', hex: 'cf0000541f0000000001' },
-      { atMs: 800, dir: 'rx', hex: W_80_0 },
-      { atMs: 1100, dir: 'rx', hex: 'cf0000361f0000000001' },
-      { atMs: 1400, dir: 'rx', hex: 'cf00004a1f0000000001' },
+      { atMs: 800, dir: 'rx', hex: SETTLED },
+      { atMs: 2000, dir: 'rx', hex: 'cfa410522170751b0100e8' },
+      { atMs: 2300, dir: 'rx', hex: 'cfa410522170751b010215' },
+      { atMs: 2600, dir: 'rx', hex: 'cfa410522170' },
+      { atMs: 2900, dir: 'rx', hex: 'cea410522170751b010017' },
     ],
   },
 };

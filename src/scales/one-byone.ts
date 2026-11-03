@@ -11,16 +11,22 @@ import type {
 } from '../interfaces/scale-adapter.js';
 import { uuid16, xorChecksum, WEIGHT_ONLY_HOLD_MS, biaPayload } from './body-comp-helpers.js';
 import { matchesDescriptor, type MatchDescriptor } from './match-descriptor.js';
+import { bleLog } from '../ble/types.js';
+
+/** Gap before each init write, as the EufyLife app paces its writes. */
+const WRITE_PACING_MS = 500;
 
 /**
- * Hold window (ms) for the weight-stability gate (#284). 1byone frames stream
- * continuously with no "measurement locked" flag, so resolving on the first
- * weight>0 frame could export a value while the person was still settling.
- * Instead we hold the link open and resolve once two consecutive frames report
- * the same weight (isFinal). If that never happens within the window, shared.ts
- * resolves the last held reading, so no reading is ever lost.
+ * Hold window (ms) for the impedance frame. The scale computes BIA once the
+ * person steps off and sends it 5-7 s after the stable weight, then keeps the
+ * link about 20 s in all. If it never comes (socks), the stable weight
+ * resolves when the window elapses.
  */
-const WEIGHT_STABLE_HOLD_MS = 3000;
+const IMPEDANCE_HOLD_MS = 12_000;
+
+const STATUS_FINAL = 0x00;
+const STATUS_MEASURING = 0x01;
+const STATUS_OVERWEIGHT = 0x02;
 
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
@@ -30,25 +36,58 @@ const WEIGHT_STABLE_HOLD_MS = 3000;
  * onConnected under one Promise.all, so the synchronous prefix wins the race.
  */
 class OneByoneSession {
-  /** Raw weight (hundredths of kg) of the previous frame this session. */
-  previousRawWeight: number | null = null;
-  /** True once two consecutive frames reported the same weight. */
-  weightStable = false;
+  /** True when the last parsed frame was a settled live frame or a stored record. */
+  frameSettled = false;
 }
 
 /**
- * Adapter for Eufy C1/P1/A1 and "Health Scale" branded 1byone devices.
- *
- * Protocol: service 0xFFF0, notify 0xFFF4, write 0xFFF1.
- * Unlock via clock-sync frame: [0xF1, yearHi, yearLo, month, day, hour, min, sec].
- * Measurement frames begin with 0xCF header.
- *   Weight at bytes [3-4] little-endian uint16 / 100 (kg).
- *   Impedance: ((data[2]<<8)+data[1]) * 0.1, valid when byte[9] != 1 and != 0.
+ * The time a stored record was measured: bytes [11..17] yearBE(2) month day
+ * hour minute second, on the scale's clock (local time, set by the clock
+ * sync). Undefined when the date is not plausible.
  */
-export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
+function recordTime(data: Buffer): Date | undefined {
+  const year = data.readUInt16BE(11);
+  const month = data[13];
+  const day = data[14];
+  if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return undefined;
+  }
+  return new Date(year, month - 1, day, data[15], data[16], data[17]);
+}
+
+/**
+ * Adapter for Eufy C1/P1/A1 (T9146/T9147/T9120) and "Health Scale" branded
+ * 1byone devices.
+ *
+ * Protocol from a btsnoop capture of the EufyLife Android app with a T9146
+ * (tests/fixtures/onebyone/t9146.ts), cross-checked against the
+ * bdr99/eufylife-ble-client implementation. Service 0xFFF0, notify 0xFFF4,
+ * write 0xFFF1, every write with response. The scale streams as soon as the
+ * CCCD is on; no command starts it.
+ *
+ * Commands (0xFFF1):
+ *   f1 yearBE month day hour min sec  clock sync, local time  -> f1 00
+ *   f2 00                             send stored records     -> 18-byte
+ *                                     records, then f2 00
+ *   f2 01                             ack of the f2 00 end marker, which
+ *                                     clears the scale's memory -> f2 01
+ * The app also writes `fd 00 01 00 00 00 00 00 00 00 fc`, which sets the
+ * scale's display unit (it switched a kg display to lb), so it is not sent.
+ * `f3 00` is the scale's own notice that it is about to sleep.
+ *
+ * 0xCF data frames, 11 bytes live and 18 bytes stored:
+ *   [0]      0xCF
+ *   [1..2]   impedance LE, x0.1 ohm, 0 when not measured
+ *   [3..4]   weight LE, /100 kg
+ *   [8]      1 once the live weight has settled (0 on stored records)
+ *   [9]      status: 0x00 final, 0x01 measuring, 0x02 over the weight limit
+ *   [10]     XOR of [0..9]
+ *   [11..17] stored records only: when it was measured (recordTime)
+ */
+export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForComposition {
   readonly name = '1byone (Eufy)';
   readonly match: MatchDescriptor = {
-    priority: 70,
+    priority: 91,
     custom: true,
     names: { includes: ['t9146', 't9147', 't9120', 'health scale'] },
     charUuids: ['fff4'],
@@ -57,6 +96,7 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
   readonly charWriteUuid = uuid16(0xfff1);
 
   private s = new OneByoneSession();
+  private ctx: ConnectionContext | null = null;
 
   matches(device: BleDeviceInfo): boolean {
     // Name match is unambiguous (T914x / Health Scale); keep it.
@@ -74,20 +114,12 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
     return chars.includes(uuid16(0xfff4)) && !chars.includes(uuid16(0xfff2));
   }
 
-  /**
-   * Init sequence per openScale OneByoneHandler:
-   *   1. Mode/unit command: [0xFD, 0x37, unit, group, ...padding, XOR]
-   *   2. Clock sync: [0xF1, yearHi, yearLo, month, day, hour, min, sec]
-   */
+  /** Clock sync, then the request for stored records, paced like the app. */
   async onConnected(ctx: ConnectionContext): Promise<void> {
     this.s = new OneByoneSession();
+    this.ctx = ctx;
 
-    // Step 1: Mode/unit command
-    const unitCmd = [0xfd, 0x37, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-    unitCmd.push(xorChecksum(unitCmd, 0, unitCmd.length));
-    await ctx.write(this.charWriteUuid, unitCmd, false);
-
-    // Step 2: Clock sync
+    await new Promise<void>((r) => setTimeout(r, WRITE_PACING_MS));
     const now = new Date();
     const clockCmd = [
       0xf1,
@@ -99,56 +131,81 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring {
       now.getMinutes(),
       now.getSeconds(),
     ];
-    await ctx.write(this.charWriteUuid, clockCmd, false);
+    await ctx.write(this.charWriteUuid, clockCmd, true);
+
+    await new Promise<void>((r) => setTimeout(r, WRITE_PACING_MS));
+    await ctx.write(this.charWriteUuid, [0xf2, 0x00], true);
+  }
+
+  onSessionEnd(): void {
+    this.ctx = null;
   }
 
   parseNotification(data: Buffer): ScaleReading | null {
-    if (data.length < 5 || data[0] !== 0xcf) return null;
+    this.s.frameSettled = false;
 
-    const rawWeight = data.readUInt16LE(3);
-    const weight = rawWeight / 100;
-
-    let impedance = 0;
-    if (data.length >= 10) {
-      const rawImp = ((data[2] << 8) + data[1]) * 0.1;
-      const impedanceInvalid = data[9] === 1 || rawImp === 0;
-      if (!impedanceInvalid) {
-        impedance = rawImp;
+    if (data.length === 2) {
+      if (data[0] === 0xf2 && data[1] === 0x00) this.ackEndOfHistory();
+      if (data[0] === 0xf3 && data[1] === 0x00) {
+        bleLog.debug('1byone: the scale announced the end of the session (f3 00)');
       }
+      return null;
     }
 
-    this.s.weightStable = this.s.previousRawWeight === rawWeight;
-    this.s.previousRawWeight = rawWeight;
+    if (data.length < 11 || data[0] !== 0xcf) return null;
+    if (xorChecksum(data, 0, 10) !== data[10]) {
+      bleLog.debug('1byone: dropping a 0xCF frame with a bad checksum');
+      return null;
+    }
+    const status = data[9];
+    if (status === STATUS_OVERWEIGHT) return null;
 
+    const weight = data.readUInt16LE(3) / 100;
+    const impedance = status === STATUS_MEASURING ? 0 : ((data[2] << 8) | data[1]) * 0.1;
+
+    if (data.length >= 18) {
+      const timestamp = recordTime(data);
+      if (!timestamp) return null;
+      this.s.frameSettled = true;
+      return { weight, impedance, timestamp, fromMemory: true };
+    }
+
+    // The HA client takes status 0x00 alone as final; the capture also sets
+    // [8] on every settled frame. Either one is enough.
+    this.s.frameSettled = data[8] === 1 || status === STATUS_FINAL;
     return { weight, impedance };
   }
 
+  /** A settled weight completes the reading; frames still measuring only feed the live display. */
   isComplete(reading: ScaleReading): boolean {
-    return reading.weight > 0;
+    return reading.weight > 0 && this.s.frameSettled;
   }
 
-  /**
-   * Hold the link open after the first weight so it can settle, rather than
-   * exporting the first frame while the person is still stepping on.
-   */
-  readonly completionHoldMs = WEIGHT_STABLE_HOLD_MS;
+  readonly completionHoldMs = IMPEDANCE_HOLD_MS;
 
-  /** Resolve immediately once the weight has stabilized across two frames. */
-  isFinal(_reading: ScaleReading): boolean {
-    return this.s.weightStable;
+  /** The impedance comes in the last live frame, so it ends the hold at once. */
+  isFinal(reading: ScaleReading): boolean {
+    return reading.impedance > 0;
   }
 
   computeMetrics(reading: ScaleReading, profile: UserProfile): BodyComposition {
     // buildPayload does NOT run the BIA estimator: without a fat percentage it
     // falls back to the Deurenberg BMI estimate, so an adapter that parses an
     // impedance and then passes an empty comp publishes the impedance and
-    // ignores it (#386). biaFatIfPlausible bounds the value first, because the
-    // scaling of this field has never been checked against a capture.
-    // It earns its keep here more than anywhere: this adapter multiplies the
-    // raw field by 0.1 on the strength of an openScale port, so if that factor
-    // is wrong a real 300-900 ohm body arrives as 30-90 and is refused, which
-    // leaves the reading exactly where it was before this change.
+    // ignores it (#386). biaFatIfPlausible bounds the value first.
     return biaPayload(reading, profile);
+  }
+
+  /** Ack the end of the stored records like the app; the scale then clears them. */
+  private ackEndOfHistory(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    void ctx.write(this.charWriteUuid, [0xf2, 0x01], true).catch((e: unknown) => {
+      bleLog.warn(
+        `1byone: the end-of-history ack failed, so the scale keeps its stored records ` +
+          `and sends them again next time: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
   }
 }
 

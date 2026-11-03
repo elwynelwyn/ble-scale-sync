@@ -1,0 +1,110 @@
+{
+  "settled": {
+    "by": "reading",
+    "atMs": 7713
+  },
+  "reading": {
+    "weight": 85.3,
+    "impedance": 426
+  },
+  "history": [
+    {
+      "weight": 85.3,
+      "impedance": 428,
+      "timestamp": "2026-07-04T16:07:38.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.4,
+      "impedance": 426,
+      "timestamp": "2026-07-04T16:09:05.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.3,
+      "impedance": 431,
+      "timestamp": "2026-07-04T16:09:56.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.4,
+      "impedance": 431,
+      "timestamp": "2026-07-04T16:11:58.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.4,
+      "impedance": 440,
+      "timestamp": "2026-07-04T16:46:34.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.1,
+      "impedance": 430,
+      "timestamp": "2026-07-04T17:00:32.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.1,
+      "impedance": 421,
+      "timestamp": "2026-07-04T17:00:58.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.1,
+      "impedance": 426,
+      "timestamp": "2026-07-04T17:01:10.000Z",
+      "fromMemory": true
+    },
+    {
+      "weight": 85.3,
+      "impedance": 426,
+      "timestamp": "2026-07-04T17:15:45.000Z",
+      "fromMemory": true
+    }
+  ],
+  "subscribes": [
+    {
+      "seq": 0,
+      "atMs": 0,
+      "uuid": "fff4"
+    }
+  ],
+  "writes": [
+    {
+      "seq": 1,
+      "atMs": 500,
+      "uuid": "fff1",
+      "hex": "f107ea0704111000",
+      "withResponse": true
+    },
+    {
+      "seq": 2,
+      "atMs": 1000,
+      "uuid": "fff1",
+      "hex": "f200",
+      "withResponse": true
+    },
+    {
+      "seq": 3,
+      "atMs": 1511,
+      "uuid": "fff1",
+      "hex": "f201",
+      "withResponse": true
+    }
+  ],
+  "rxDropped": 0,
+  "payload": {
+    "weight": 85.3,
+    "impedance": 426,
+    "bmi": 25.47,
+    "bodyFatPercent": 21.83,
+    "waterPercent": 57.06,
+    "boneMass": 2.8,
+    "muscleMass": 63.88,
+    "visceralFat": 10,
+    "physiqueRating": 5,
+    "bmr": 1851,
+    "metabolicAge": 31
+  }
+}

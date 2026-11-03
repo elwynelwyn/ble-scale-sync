@@ -1,48 +1,48 @@
 {
   "settled": {
     "by": "reading",
-    "atMs": 1100
+    "atMs": 12800
   },
   "reading": {
-    "weight": 80,
+    "weight": 85.3,
     "impedance": 0
   },
   "history": [],
   "subscribes": [
     {
-      "seq": 1,
+      "seq": 0,
       "atMs": 0,
       "uuid": "fff4"
     }
   ],
   "writes": [
     {
-      "seq": 0,
-      "atMs": 0,
+      "seq": 1,
+      "atMs": 500,
       "uuid": "fff1",
-      "hex": "fd37000100000000000000cb",
-      "withResponse": false
+      "hex": "f107ea0101000000",
+      "withResponse": true
     },
     {
       "seq": 2,
-      "atMs": 0,
+      "atMs": 1000,
       "uuid": "fff1",
-      "hex": "f107ea0101000000",
-      "withResponse": false
+      "hex": "f200",
+      "withResponse": true
     }
   ],
   "rxDropped": 0,
   "payload": {
-    "weight": 80,
+    "weight": 85.3,
     "impedance": 0,
-    "bmi": 23.89,
-    "bodyFatPercent": 19.37,
-    "waterPercent": 58.86,
-    "boneMass": 2.71,
-    "muscleMass": 61.8,
-    "visceralFat": 9,
+    "bmi": 25.47,
+    "bodyFatPercent": 21.27,
+    "waterPercent": 57.48,
+    "boneMass": 2.82,
+    "muscleMass": 64.34,
+    "visceralFat": 10,
     "physiqueRating": 5,
-    "bmr": 1798,
+    "bmr": 1851,
     "metabolicAge": 31
   }
 }

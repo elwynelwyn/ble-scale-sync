@@ -29,7 +29,7 @@ _Weight only_ means the weight is read and body composition is estimated from BM
 | Renpho A-R003                                                          | Weight only      | Experimental; advertises no name, so it needs `ble.scale_mac` on the default Linux transport and on macOS |
 | Renpho ES-26BB-B                                                       | Yes              |       |
 | Renpho R-MSC04 (MorphoScan Nova)                                       | Weight only      | The scale's own body fat with `ble.rmsc04_profile_byte`; see [Renpho Scales](./scales/renpho) |
-| 1byone / Eufy C1 / P1                                                  | Yes              |       |
+| 1byone / Eufy C1 / P1                                                  | Yes              | Also reads the weigh-ins stored on the scale, which clears them from it as the EufyLife app does |
 | Eufy Smart Scale P2 (T9148) / P2 Pro (T9149)                           | Yes              | Body composition over a connection; the broadcast gives weight only |
 | Eufy Smart Scale C20 (T9130) / P3 (T9150)                              | Weight only      | Broadcast only; matched by its name or by its own address |
 | Yunmai Signal / Mini / Mini 2                                          | Yes              | Impedance and, on newer firmware, the scale's own body fat |
