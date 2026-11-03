@@ -61,6 +61,9 @@ if "ble_bridge" not in sys.modules:
         drain_results=lambda: [],
         _raw_results=[],
     )
+    _ble_bridge.ScaleBeepGate = lambda: types.SimpleNamespace(update=lambda *a: None)
+    _ble_bridge.ResultTimer = lambda: types.SimpleNamespace()
+    _ble_bridge.PROBLEM_BEEP = (400, 500, 2)
     sys.modules["ble_bridge"] = _ble_bridge
 
 import json  # noqa: E402

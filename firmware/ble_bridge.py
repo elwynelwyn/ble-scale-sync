@@ -31,6 +31,20 @@ CRASH_FLOOR_FREE = 2048
 CONNECT_DISCOVERY_RESERVE_MS = 2000
 CONNECT_MIN_ATTEMPT_MS = 1000
 
+# Re-arm the weigh-in beep after this long without an advertisement from a known scale.
+SCALE_REARM_MS = 30000
+
+# A weigh-in that has produced no result beep from the server within this long
+# is reported with PROBLEM_BEEP (freq Hz, duration ms, repeat).
+RESULT_TIMEOUT_MS = 40000
+PROBLEM_BEEP = (400, 500, 2)
+
+try:
+    from time import ticks_diff as _ticks_diff
+except ImportError:  # CPython (host tests)
+    def _ticks_diff(a, b):
+        return a - b
+
 
 # ESP-IDF MALLOC_CAP_INTERNAL (components/heap/include/esp_heap_caps.h). The
 # esp32 module only names HEAP_DATA (MALLOC_CAP_8BIT) and HEAP_EXEC, but
@@ -246,6 +260,96 @@ def _merge_entry(seen, entry):
                 cur["service_data"] = entry["service_data"]
     else:
         seen[mac] = entry
+
+
+def advert_weight(entry):
+    """Weight in kg from a scale advertisement's 0xCF frame (Eufy/1byone layout), or None.
+
+    Frame (11 bytes, inside manufacturer_data): cf | impedance LE (2) |
+    weight LE /100 kg (2) | 3 bytes | stable | status | XOR of the 10 preceding
+    bytes. The offset is located by checksum rather than fixed. Status 0x02
+    (overload) yields None.
+    """
+    hexdata = entry.get("manufacturer_data")
+    if not hexdata:
+        return None
+    try:
+        data = bytes.fromhex(hexdata)
+    except ValueError:
+        return None
+    for i in range(len(data) - 10):
+        if data[i] != 0xCF:
+            continue
+        x = 0
+        for j in range(i, i + 10):
+            x ^= data[j]
+        if x != data[i + 10]:
+            continue
+        if data[i + 9] == 0x02:
+            return None
+        return (data[i + 3] | (data[i + 4] << 8)) / 100
+    return None
+
+
+class ScaleBeepGate:
+    """Decides when to announce a weigh-in: once per weigh-in, on the first
+    non-zero weight from a known scale. Re-arms on a zero-weight frame or after
+    SCALE_REARM_MS without any advertisement from a known scale."""
+
+    def __init__(self):
+        self.armed = True
+        self.last_seen = None
+
+    def update(self, results, macs, now):
+        """Return (mac, weight_kg) to announce, or None. `now` is ticks_ms."""
+        if self.last_seen is not None and _ticks_diff(now, self.last_seen) >= SCALE_REARM_MS:
+            self.armed = True
+            self.last_seen = None
+        hit = None
+        for r in results:
+            if r["address"] not in macs:
+                continue
+            self.last_seen = now
+            weight = advert_weight(r)
+            if weight is None:
+                continue
+            if weight == 0:
+                self.armed = True
+            elif self.armed:
+                self.armed = False
+                hit = (r["address"], weight)
+        return hit
+
+    def finish(self, now):
+        """End the current weigh-in: stay silent until a zero weight or SCALE_REARM_MS unseen."""
+        self.armed = False
+        self.last_seen = now
+
+
+class ResultTimer:
+    """Times how long a weigh-in has waited for the server's result beep."""
+
+    def __init__(self):
+        self.started = None
+
+    def start(self, now):
+        self.started = now
+
+    def cancel(self):
+        self.started = None
+
+    def elapsed(self, now):
+        """Milliseconds since start(), or None when not running."""
+        if self.started is None:
+            return None
+        return _ticks_diff(now, self.started)
+
+    def expired(self, now):
+        """True once when the timeout has passed since start(), then idle."""
+        if self.started is None or _ticks_diff(now, self.started) < RESULT_TIMEOUT_MS:
+            return False
+        self.started = None
+        return True
 
 
 def _raw_has_mac(raw_results, macs):

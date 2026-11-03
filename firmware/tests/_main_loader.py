@@ -62,6 +62,24 @@ class _FakeMQTTClient:
         pass
 
 
+def _load_real_ble_bridge():
+    """The real ble_bridge.py under its own name, for its pure classes."""
+    bluetooth = types.ModuleType("bluetooth")
+    bluetooth.BLE = lambda: None
+    stubs = {
+        "aioble": types.ModuleType("aioble"),
+        "bluetooth": bluetooth,
+        "board": _stub_board(),
+    }
+    with mock.patch.dict(sys.modules, stubs):
+        spec = importlib.util.spec_from_file_location(
+            "ble_bridge_isolated_%d" % next(_counter), os.path.join(FIRMWARE_DIR, "ble_bridge.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
 def load_main(config=None, raw_config=None, **board_overrides):
     """Execute main.py with `config` (a dict) or `raw_config` (file text).
 
@@ -79,6 +97,10 @@ def load_main(config=None, raw_config=None, **board_overrides):
         drain_results=lambda: [],
         _raw_results=[],
     )
+    real_bridge = _load_real_ble_bridge()
+    ble_bridge.ScaleBeepGate = real_bridge.ScaleBeepGate
+    ble_bridge.ResultTimer = real_bridge.ResultTimer
+    ble_bridge.PROBLEM_BEEP = real_bridge.PROBLEM_BEEP
 
     network = types.ModuleType("network")
     network.STA_IF = 0

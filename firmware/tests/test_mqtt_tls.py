@@ -67,6 +67,9 @@ def _board_stub():
 def _ble_bridge_stub():
     m = types.ModuleType("ble_bridge")
     m.BleBridge = lambda: types.SimpleNamespace()
+    m.ScaleBeepGate = lambda: types.SimpleNamespace()
+    m.ResultTimer = lambda: types.SimpleNamespace()
+    m.PROBLEM_BEEP = (400, 500, 2)
     return m
 
 
