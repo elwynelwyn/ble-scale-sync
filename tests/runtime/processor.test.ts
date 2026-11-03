@@ -503,6 +503,108 @@ describe('processReading: historical replay', () => {
     expect(ctx.lastExportedWeights.get('dad')).toBe(83.0);
   });
 
+  describe('multi-user: per-frame matching on a shared scale', () => {
+    const dadShared: UserConfig = { ...dad, last_known_weight: null };
+    const momShared: UserConfig = { ...mom, last_known_weight: null };
+    const hist = (weight: number, day: number): ScaleReading => ({
+      weight,
+      impedance: 500,
+      timestamp: new Date(`2025-07-0${day}T07:00:00Z`),
+    });
+
+    /** Exporter names encode the slug so dispatch calls reveal the routing. */
+    function routingGetter(): (slug: string) => Exporter[] {
+      return (slug) => [fakeExporter(slug)];
+    }
+
+    function routedSlugs(): string[] {
+      return vi.mocked(dispatchExports).mock.calls.map(([exporters]) => exporters[0].name);
+    }
+
+    it('routes each frame of a mixed batch to its own user and beeps twice once', async () => {
+      const display = fakeDisplay();
+      const ctx = makeCtx([dadShared, momShared], { display });
+      const raw = rawWithHistory(hist(60, 1), hist(90, 2), { weight: 92, impedance: 500 });
+
+      const ok = await processReading(ctx, raw, { getExportersForUser: routingGetter() });
+
+      expect(ok).toBe(true);
+      expect(routedSlugs()).toEqual(['mom', 'dad', 'dad']);
+      const computed = vi.mocked(raw.adapter.computeMetrics).mock.calls.map(([r]) => r.weight);
+      expect(computed).toEqual([60, 90, 92]);
+      expect(display.beep).toHaveBeenCalledOnce();
+      expect(display.beep).toHaveBeenCalledWith(1200, 200, 2);
+    });
+
+    it('history-only batch: routes per frame, stays silent, skips last_known_weight', async () => {
+      const display = fakeDisplay();
+      const ctx = makeCtx([dadShared, momShared], {
+        display,
+        configSource: 'yaml',
+        configPath: '/tmp/config.yaml',
+      });
+      const raw = rawWithHistory(hist(60, 1), hist(90, 2));
+
+      await processReading(ctx, raw, { getExportersForUser: routingGetter() });
+
+      expect(routedSlugs()).toEqual(['mom', 'dad']);
+      expect(display.beep).not.toHaveBeenCalled();
+      expect(display.reading).not.toHaveBeenCalled();
+      expect(display.result).not.toHaveBeenCalled();
+      expect(updateLastKnownWeight).not.toHaveBeenCalled();
+    });
+
+    it('unmatched live frame: exports matching history, beeps three times once', async () => {
+      const display = fakeDisplay();
+      const ctx: AppContext = {
+        ...makeCtx([dadShared, momShared], { display }),
+        config: { ...makeAppConfig([dadShared, momShared]), unknown_user: 'log' },
+      };
+      const raw = rawWithHistory(hist(60, 1), hist(90, 2), { weight: 150, impedance: 500 });
+
+      const ok = await processReading(ctx, raw, { getExportersForUser: routingGetter() });
+
+      expect(ok).toBe(true);
+      expect(routedSlugs()).toEqual(['mom', 'dad']);
+      expect(display.beep).toHaveBeenCalledOnce();
+      expect(display.beep).toHaveBeenCalledWith(600, 150, 3);
+      expect(display.reading).not.toHaveBeenCalled();
+    });
+
+    it('notifies the display only for the live frame', async () => {
+      const display = fakeDisplay();
+      const ctx = makeCtx([dadShared, momShared], {
+        display,
+        configSource: 'yaml',
+        configPath: '/tmp/config.yaml',
+      });
+      const raw = rawWithHistory(hist(60, 1), hist(90, 2), { weight: 92, impedance: 510 });
+
+      await processReading(ctx, raw, { getExportersForUser: routingGetter() });
+
+      expect(display.reading).toHaveBeenCalledOnce();
+      expect(display.reading).toHaveBeenCalledWith('dad', 'Dad', 92, 510, ['dad']);
+      expect(display.result).toHaveBeenCalledOnce();
+      expect(display.result).toHaveBeenCalledWith('dad', 'Dad', 80, [
+        { name: 'webhook', ok: true },
+      ]);
+      expect(updateLastKnownWeight).toHaveBeenCalledOnce();
+      expect(updateLastKnownWeight).toHaveBeenCalledWith('/tmp/config.yaml', 'dad', 92, null);
+    });
+
+    it('history-only batch returns false when any group dispatch fails', async () => {
+      vi.mocked(dispatchExports)
+        .mockResolvedValueOnce({ success: true, details: [] })
+        .mockResolvedValueOnce({ success: false, details: [] });
+      const ctx = makeCtx([dadShared, momShared]);
+      const raw = rawWithHistory(hist(60, 1), hist(90, 2));
+
+      const ok = await processReading(ctx, raw, { getExportersForUser: routingGetter() });
+
+      expect(ok).toBe(false);
+    });
+  });
+
   it('single-user: dry-run does not advance the runtime dedup anchor', async () => {
     const ctx = makeCtx([dad]);
     // Dry run = undefined exporters. The anchor must stay unset so a later real
