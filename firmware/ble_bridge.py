@@ -85,6 +85,15 @@ def _norm_uuid(uuid):
     return s.lower().replace("-", "")
 
 
+def _rev_hex(b):
+    # MicroPython has no step slices on bytes, so b[::-1] is unavailable.
+    n = len(b)
+    r = bytearray(n)
+    for i in range(n):
+        r[n - 1 - i] = b[i]
+    return bytes(r).hex()
+
+
 def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
     """Parse a single raw BLE advertisement into a device dict.
 
@@ -133,7 +142,7 @@ def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
                 services.append("%08x" % val + _BT_BASE_SUFFIX)
         elif ad_type == 0x07 or ad_type == 0x06:  # 128-bit Service UUIDs
             for j in range(0, len(ad_payload) - 15, 16):
-                services.append(ad_payload[j:j + 16][::-1].hex())
+                services.append(_rev_hex(ad_payload[j:j + 16]))
         elif ad_type == 0x16 and len(ad_payload) >= 2:  # Service Data — 16-bit
             uuid = "%04x" % (ad_payload[0] | (ad_payload[1] << 8))
             service_data.append({"uuid": uuid, "data": ad_payload[2:].hex()})
@@ -147,7 +156,7 @@ def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
             uuid = "%08x" % val + _BT_BASE_SUFFIX
             service_data.append({"uuid": uuid, "data": ad_payload[4:].hex()})
         elif ad_type == 0x21 and len(ad_payload) >= 16:  # Service Data — 128-bit
-            uuid = ad_payload[0:16][::-1].hex()
+            uuid = _rev_hex(ad_payload[0:16])
             service_data.append({"uuid": uuid, "data": ad_payload[16:].hex()})
         elif ad_type == 0xFF and length >= 3:  # Manufacturer Specific
             mfr_id = ad_payload[0] | (ad_payload[1] << 8)
