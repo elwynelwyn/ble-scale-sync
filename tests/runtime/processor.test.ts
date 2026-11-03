@@ -1200,6 +1200,133 @@ describe('processReading: out_of_range', () => {
   });
 });
 
+describe('processReading: multi-user cue for a weigh-in that arrives as a stored record', () => {
+  const NOW = new Date('2026-10-19T07:00:00Z');
+  const SECOND = 1000;
+  const MIN = 60_000;
+  const ago = (ms: number): Date => new Date(NOW.getTime() - ms);
+
+  function stored(weight: number, timestamp: Date): ScaleReading {
+    return { weight, impedance: 480, timestamp, fromMemory: true };
+  }
+
+  function storedOnly(...readings: ScaleReading[]): RawReading {
+    const reading = readings[readings.length - 1];
+    const history = readings.length > 1 ? readings.slice(0, -1) : undefined;
+    return { reading, adapter: fakeAdapter(), history };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('plays the saved cue once and exports to the matched user when the newest record is 30 s old', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    const raw = storedOnly(stored(61, ago(20 * MIN)), stored(85, ago(30 * SECOND)));
+
+    await processReading(ctx, raw, { getExportersForUser: () => [fakeExporter('garmin')] });
+
+    expect(display.beep).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledWith(1200, 200, 2);
+    expect(dispatchExports).toHaveBeenCalledTimes(2);
+    const contexts = vi.mocked(dispatchExports).mock.calls.map((c) => c[2]);
+    expect(contexts.map((c) => c?.userSlug)).toEqual(['mom', 'dad']);
+  });
+
+  it('stays silent when the stored records are 10 minutes old', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+
+    await processReading(ctx, storedOnly(stored(85, ago(10 * MIN))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(display.beep).not.toHaveBeenCalled();
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent for a record stamped in the future or without a stamp', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    const future = new Date(NOW.getTime() + 30 * SECOND);
+
+    await processReading(
+      ctx,
+      storedOnly({ weight: 61, impedance: 480, fromMemory: true }, stored(85, future)),
+      { getExportersForUser: () => [fakeExporter('garmin')] },
+    );
+
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
+  it('plays the unknown-person cue once when the just-taken record matches nobody', async () => {
+    const dadNoLast: UserConfig = { ...dad, last_known_weight: null };
+    const momNoLast: UserConfig = { ...mom, last_known_weight: null };
+    const display = fakeDisplay();
+    const ctx = makeCtx([dadNoLast, momNoLast], { display });
+    ctx.config.unknown_user = 'log';
+
+    await processReading(ctx, storedOnly(stored(200, ago(30 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(display.beep).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledWith(600, 150, 3);
+    expect(dispatchExports).not.toHaveBeenCalled();
+  });
+
+  it('plays the unknown-person cue once when the just-taken record is out of range and out_of_range is skip', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display, outOfRange: 'skip' });
+
+    await processReading(ctx, storedOnly(stored(178, ago(30 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(display.beep).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledWith(600, 150, 3);
+    expect(dispatchExports).not.toHaveBeenCalled();
+  });
+
+  it('leaves the cue to the live frame when the cycle has one', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    const raw: RawReading = {
+      reading: { weight: 61, impedance: 500 },
+      adapter: fakeAdapter(),
+      history: [stored(85, ago(30 * SECOND))],
+    };
+
+    await processReading(ctx, raw, { getExportersForUser: () => [fakeExporter('garmin')] });
+
+    expect(display.beep).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledWith(1200, 200, 2);
+  });
+
+  it('uses the newest just-taken record to decide the cue', async () => {
+    const dadNoLast: UserConfig = { ...dad, last_known_weight: null };
+    const momNoLast: UserConfig = { ...mom, last_known_weight: null };
+    const display = fakeDisplay();
+    const ctx = makeCtx([dadNoLast, momNoLast], { display });
+    ctx.config.unknown_user = 'log';
+
+    await processReading(
+      ctx,
+      storedOnly(stored(85, ago(90 * SECOND)), stored(200, ago(10 * SECOND))),
+      { getExportersForUser: () => [fakeExporter('garmin')] },
+    );
+
+    expect(display.beep).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledWith(600, 150, 3);
+  });
+});
+
 describe('failed exports are queued for a later cycle (#412)', () => {
   let dir: string;
   let queuePath: string;

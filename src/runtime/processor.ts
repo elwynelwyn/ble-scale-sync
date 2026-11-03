@@ -53,6 +53,9 @@ const DEDUP_KG_TOLERANCE = 0.1;
  */
 const REPLAY_CLOCK_MARGIN_MS = HISTORY_WINDOW_MS;
 
+/** A stored record stamped this recently is the weigh-in of whoever just stepped off the scale. */
+const JUST_TAKEN_MS = 2 * 60 * 1000;
+
 /**
  * One reading of a cycle, classified once when the cycle is received (D027).
  *
@@ -608,6 +611,22 @@ function attributeStored(ctx: AppContext, frame: Frame): UserConfig | null {
   return match.user;
 }
 
+/**
+ * The newest stored record stamped within JUST_TAKEN_MS, if any. When the
+ * connection came up after the person stepped off, their weigh-in arrives as a
+ * stored record, and the cue for it is the one a live weigh-in would get.
+ * An unstamped or future-stamped record is never "just taken".
+ */
+function newestJustTaken(stored: Frame[]): Frame | undefined {
+  const now = Date.now();
+  return stored
+    .filter((f) => f.stamped && now - f.measuredAt.getTime() <= JUST_TAKEN_MS)
+    .reduce<Frame | undefined>(
+      (newest, f) => (!newest || f.measuredAt > newest.measuredAt ? f : newest),
+      undefined,
+    );
+}
+
 async function processMultiUser(
   ctx: AppContext,
   raw: RawReading,
@@ -628,12 +647,19 @@ async function processMultiUser(
     log.info(`\n${stored.length} stored reading(s) from the scale's memory, no live weigh-in.`);
   }
 
+  const cueFrame = latestLive ? undefined : newestJustTaken(stored);
+
   for (const frame of stored) {
+    const isCue = frame === cueFrame;
     const user = attributeStored(ctx, frame);
-    if (!user) continue;
-    if (skipOutOfRange(ctx, user, frame.reading.weight, frameTag(`[${user.name}]`, frame), false)) {
+    if (!user) {
+      if (isCue) ctx.display?.beep(600, 150, 3);
       continue;
     }
+    if (skipOutOfRange(ctx, user, frame.reading.weight, frameTag(`[${user.name}]`, frame), isCue)) {
+      continue;
+    }
+    if (isCue) ctx.display?.beep(1200, 200, 2);
     items.push({ frame, user });
   }
 
