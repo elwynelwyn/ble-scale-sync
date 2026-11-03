@@ -24,6 +24,15 @@ _BT_BASE_SUFFIX = "00001000800000805f9b34fb"
 CRASH_FLOOR_LARGEST = 1024
 CRASH_FLOOR_FREE = 2048
 
+# Re-arm the weigh-in beep after this long without an advert from a known scale.
+SCALE_REARM_MS = 30000
+
+try:
+    from time import ticks_diff as _ticks_diff
+except ImportError:  # CPython (host tests)
+    def _ticks_diff(a, b):
+        return a - b
+
 
 def _read_idf_heap():
     """Return (free, largest) ESP-IDF data-heap bytes on-device, None off-device.
@@ -180,14 +189,18 @@ def _parse_raw_entry(addr_bytes, addr_type, rssi, raw):
 
 
 def _merge_entry(seen, entry):
-    """Merge a parsed device entry into the seen dict (dedup by MAC, strongest RSSI)."""
+    """Merge a parsed device entry into the seen dict (dedup by MAC, strongest RSSI).
+
+    Manufacturer data is last-wins so scale weight frames stay current; other
+    fields keep the first non-empty value.
+    """
     mac = entry["address"]
     if mac in seen:
         if entry["rssi"] > seen[mac]["rssi"]:
             seen[mac]["rssi"] = entry["rssi"]
         if entry["name"] and not seen[mac]["name"]:
             seen[mac]["name"] = entry["name"]
-        if entry.get("manufacturer_data") and not seen[mac].get("manufacturer_data"):
+        if entry.get("manufacturer_data"):
             seen[mac]["manufacturer_id"] = entry["manufacturer_id"]
             seen[mac]["manufacturer_data"] = entry["manufacturer_data"]
         if entry.get("services") and not seen[mac].get("services"):
@@ -196,6 +209,65 @@ def _merge_entry(seen, entry):
             seen[mac]["service_data"] = entry["service_data"]
     else:
         seen[mac] = entry
+
+
+def advert_weight(entry):
+    """Weight in kg from a scale advertisement's 0xCF frame (Eufy/1byone layout), or None.
+
+    Frame (11 bytes, inside manufacturer_data): cf | impedance LE (2) |
+    weight LE /100 kg (2) | 3 bytes | stable | status | XOR of the 10 preceding
+    bytes. The offset is located by checksum rather than fixed. Status 0x02
+    (overload) yields None.
+    """
+    hexdata = entry.get("manufacturer_data")
+    if not hexdata:
+        return None
+    try:
+        data = bytes.fromhex(hexdata)
+    except ValueError:
+        return None
+    for i in range(len(data) - 10):
+        if data[i] != 0xCF:
+            continue
+        x = 0
+        for j in range(i, i + 10):
+            x ^= data[j]
+        if x != data[i + 10]:
+            continue
+        if data[i + 9] == 0x02:
+            return None
+        return (data[i + 3] | (data[i + 4] << 8)) / 100
+    return None
+
+
+class ScaleBeepGate:
+    """Decides when to announce a weigh-in: once per weigh-in, on the first
+    non-zero weight from a known scale. Re-arms on a zero-weight frame or after
+    SCALE_REARM_MS without any advert from a known scale."""
+
+    def __init__(self):
+        self.armed = True
+        self.last_seen = None
+
+    def update(self, results, macs, now):
+        """Return (mac, weight_kg) to announce, or None. `now` is ticks_ms."""
+        if self.last_seen is not None and _ticks_diff(now, self.last_seen) >= SCALE_REARM_MS:
+            self.armed = True
+            self.last_seen = None
+        hit = None
+        for r in results:
+            if r["address"] not in macs:
+                continue
+            self.last_seen = now
+            weight = advert_weight(r)
+            if weight is None:
+                continue
+            if weight == 0:
+                self.armed = True
+            elif self.armed:
+                self.armed = False
+                hit = (r["address"], weight)
+        return hit
 
 
 def _raw_has_mac(raw_results, macs):

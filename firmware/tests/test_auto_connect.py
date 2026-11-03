@@ -61,6 +61,7 @@ _ble_bridge.BleBridge = lambda: types.SimpleNamespace(
     drain_results=lambda: [],
     _raw_results=[],
 )
+_ble_bridge.ScaleBeepGate = lambda: types.SimpleNamespace(update=lambda *a: None)
 sys.modules["ble_bridge"] = _ble_bridge
 
 # Write a minimal config.json for main.py import

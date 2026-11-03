@@ -332,7 +332,7 @@ Compare this to the standard [Docker deployment](/guide/getting-started#docker) 
 ### What the firmware does
 
 - **Autonomous scanning**: scans for BLE advertisements in a continuous loop (interval is board-specific, ~2-10s)
-- **Scale detection**: beeps when a known scale MAC is seen (MACs registered by the server after adapter matching)
+- **Scale detection**: beeps once per weigh-in when a supported scale (currently Eufy T9146/1byone, which broadcasts weight in its advertisement) reports a non-zero weight. Scales that don't broadcast weight in their advertisement don't trigger it. Scale MACs are registered by the server after adapter matching
 - **Radio management**: on shared-radio boards (ESP32-PICO), deactivates BLE after each scan so WiFi can recover
 - **Display UI** (4848 board): shows WiFi/MQTT/BLE status, scan activity, user match results, and export outcomes
 - **Config sync**: receives scale MAC list and user info from the server for local feedback

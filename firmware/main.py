@@ -11,7 +11,7 @@ import gc
 import time
 import board
 from mqtt_as import MQTTClient, config as mqtt_config
-from ble_bridge import BleBridge
+from ble_bridge import BleBridge, ScaleBeepGate
 
 if board.HAS_BEEP:
     from beep import beep
@@ -46,7 +46,7 @@ _pending = []
 
 # Scale MAC detection for instant beep
 _scale_macs = set()
-_last_beep_time = 0
+_beep_gate = ScaleBeepGate()
 
 # Autonomous GATT connect: ESP32 connects itself when a known scale MAC
 # appears in a scan, eliminating the MQTT round-trip latency (#201).
@@ -171,18 +171,15 @@ async def _wait_not_busy(max_iters=60, sleep_ms=500):
 # ─── Autonomous scan loop ────────────────────────────────────────────────────
 
 def _check_scale_beep(results):
-    """Beep/display if a known scale MAC is present (60s debounce)."""
-    global _last_beep_time
-    if _scale_macs and time.ticks_diff(time.ticks_ms(), _last_beep_time) > 60000:
-        for r in results:
-            if r["address"] in _scale_macs:
-                _last_beep_time = time.ticks_ms()
-                print(f"Scale detected: {r['address']}")
-                if board.HAS_BEEP:
-                    beep()
-                if board.HAS_DISPLAY:
-                    ui.on_scale_detected(r["address"])
-                break
+    """Beep/display once per weigh-in, when a known scale reports a non-zero weight."""
+    hit = _beep_gate.update(results, _scale_macs, time.ticks_ms())
+    if hit:
+        mac, weight = hit
+        print(f"Scale detected: {mac} {weight} kg")
+        if board.HAS_BEEP:
+            beep()
+        if board.HAS_DISPLAY:
+            ui.on_scale_detected(mac)
 
 
 def _find_scale_in_raw(raw_results):

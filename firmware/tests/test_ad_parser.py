@@ -237,7 +237,7 @@ class TestMergeEntry(unittest.TestCase):
         self.assertEqual(seen[_MAC_STR]["manufacturer_id"], 0x004C)
         self.assertEqual(seen[_MAC_STR]["manufacturer_data"], "ff")
 
-    def test_manufacturer_data_preserved(self):
+    def test_later_manufacturer_data_replaces_earlier(self):
         seen = {}
         ble_bridge._merge_entry(
             seen, self._entry(manufacturer_id=0x0059, manufacturer_data="aa")
@@ -245,6 +245,15 @@ class TestMergeEntry(unittest.TestCase):
         ble_bridge._merge_entry(
             seen, self._entry(manufacturer_id=0x004C, manufacturer_data="bb")
         )
+        self.assertEqual(seen[_MAC_STR]["manufacturer_id"], 0x004C)
+        self.assertEqual(seen[_MAC_STR]["manufacturer_data"], "bb")
+
+    def test_manufacturer_data_kept_when_later_entry_has_none(self):
+        seen = {}
+        ble_bridge._merge_entry(
+            seen, self._entry(manufacturer_id=0x0059, manufacturer_data="aa")
+        )
+        ble_bridge._merge_entry(seen, self._entry())
         self.assertEqual(seen[_MAC_STR]["manufacturer_id"], 0x0059)
         self.assertEqual(seen[_MAC_STR]["manufacturer_data"], "aa")
 
