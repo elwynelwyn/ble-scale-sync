@@ -124,6 +124,12 @@ export class ReadingWatcher implements Watcher {
   private readonly refusedGattLogged = new Set<string>();
   /** When each scale last showed nobody on it, keyed lowercase; see RawReading.steppedOffAt. */
   private readonly steppedOff = new BoundedMap<string, Date>(64, 'lru');
+  /**
+   * When the current weigh-in on each scale was first seen (the first connect
+   * decision for it), keyed lowercase. Kept across connect retries; cleared by
+   * a step-off or a reading from that scale. See ConnectionContext.weighInStartedAt.
+   */
+  private readonly weighInStarted = new BoundedMap<string, Date>(64, 'lru');
 
   constructor(
     config: MqttProxyConfig,
@@ -390,8 +396,8 @@ export class ReadingWatcher implements Watcher {
           }
 
           const sinceReading = this.postReading.sinceReading(entry.address);
-          this.handleGattReading(entry, adapter, new Date()).catch((err) =>
-            this.reportGattFailure('GATT reading', entry.address, err, sinceReading),
+          this.handleGattReading(entry, adapter, this.weighInStartedAt(entry.address)).catch(
+            (err) => this.reportGattFailure('GATT reading', entry.address, err, sinceReading),
           );
         }
         // No match this scan, keep listening
@@ -547,6 +553,15 @@ export class ReadingWatcher implements Watcher {
 
   private noteSteppedOff(address: string): void {
     this.steppedOff.set(address.toLowerCase(), new Date());
+    this.weighInStarted.delete(address.toLowerCase());
+  }
+
+  /** The current weigh-in's start on this scale, set now if there is none. */
+  private weighInStartedAt(address: string): Date {
+    const key = address.toLowerCase();
+    const started = this.weighInStarted.get(key) ?? new Date();
+    this.weighInStarted.set(key, started);
+    return started;
   }
 
   /** A live frame showing weight 0 means nobody is on the scale. */
@@ -556,8 +571,12 @@ export class ReadingWatcher implements Watcher {
     };
   }
 
-  /** Queue a GATT reading with the time the scale last showed nobody on it. */
+  /**
+   * Queue a GATT reading with the time the scale last showed nobody on it. The
+   * weigh-in it was for is over, so the next connect starts a new one.
+   */
   private pushGattReading(address: string, raw: RawReading): void {
+    this.weighInStarted.delete(address.toLowerCase());
     const at = this.steppedOff.get(address.toLowerCase());
     this.queue.push(at ? { ...raw, steppedOffAt: at } : raw);
   }
@@ -565,7 +584,7 @@ export class ReadingWatcher implements Watcher {
   private async handleGattReading(
     entry: ScanResultEntry,
     adapter: ScaleAdapter,
-    connectDecidedAt: Date,
+    weighInStartedAt: Date,
   ): Promise<void> {
     if (this.gattSlot) {
       if (Date.now() - this.gattSlot.startedAt > ReadingWatcher.GATT_STALE_MS) {
@@ -647,7 +666,7 @@ export class ReadingWatcher implements Watcher {
           scaleAuth: this.scaleAuth,
           deviceName: entry.name,
           manufacturerData: toBleDeviceInfo(entry).manufacturerData,
-          connectDecidedAt,
+          weighInStartedAt,
           onLiveData: this.watchStepOff(entry.address),
         },
         proxyWatcherPolicy(entry.address),

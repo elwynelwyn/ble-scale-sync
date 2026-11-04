@@ -23,7 +23,7 @@ function initializeAdapter(
     scaleAuth,
     deviceName,
     manufacturerData,
-    connectDecidedAt,
+    weighInStartedAt,
   }: SessionRequest,
   isResolved: () => boolean,
   onNotification: (sourceUuid: string, data: Buffer) => void,
@@ -111,7 +111,7 @@ function initializeAdapter(
         deviceAddress: address,
         ...(deviceName ? { deviceName } : {}),
         ...(manufacturerData ? { manufacturerData } : {}),
-        ...(connectDecidedAt ? { connectDecidedAt } : {}),
+        ...(weighInStartedAt ? { weighInStartedAt } : {}),
         availableChars,
         write: async (charUuid, data, withResponse = true) => {
           const char = resolveChar(charMap, charUuid);
@@ -419,8 +419,8 @@ export interface SessionRequest {
   /** What the device advertised, for `ConnectionContext`. */
   deviceName?: string;
   manufacturerData?: { id: number; data: Buffer };
-  /** `ConnectionContext.connectDecidedAt`. */
-  connectDecidedAt?: Date;
+  /** `ConnectionContext.weighInStartedAt`. */
+  weighInStartedAt?: Date;
   onLiveData?: (reading: ScaleReading) => void;
   /**
    * Restarts the caller's idle timeout; called for every frame except one the

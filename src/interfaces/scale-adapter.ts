@@ -302,11 +302,12 @@ export interface ConnectionContext {
    */
   manufacturerData?: { id: number; data: Buffer };
   /**
-   * When the host decided to connect, on the advertisement that showed a
-   * weigh-in (mqtt-proxy host-initiated connects). Absent elsewhere. Lets an
-   * adapter tell the weigh-in that caused this connect from older stored ones.
+   * When the host first decided to connect for the weigh-in this session is
+   * for (mqtt-proxy host-initiated connects), kept across connect retries.
+   * Absent elsewhere. Lets an adapter tell that weigh-in from older stored
+   * ones, and bound how long it waits for it.
    */
-  connectDecidedAt?: Date;
+  weighInStartedAt?: Date;
   /**
    * Set of characteristic UUIDs (normalized 32-char hex, lowercase) that were
    * actually discovered on the connected device. Adapters with `optional`
