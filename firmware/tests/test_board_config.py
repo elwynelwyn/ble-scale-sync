@@ -24,7 +24,7 @@ _ALL_BOARDS = [
     "board_guition_4848",
 ]
 _NO_PSRAM_BOARDS = ["board_atom_echo", "board_esp_wroom_32"]
-_PSRAM_BOARDS = ["board_esp32_s3", "board_guition_4848"]
+_LONG_WINDOW_BOARDS = ["board_guition_4848"]
 
 
 class TestBoardConnectConfig(unittest.TestCase):
@@ -41,21 +41,26 @@ class TestBoardConnectConfig(unittest.TestCase):
                 self.assertGreater(value, 0, f"{name}.{const} must be positive")
 
     def test_no_psram_boards_use_tighter_window_and_retry(self):
-        s3_scan = self._load("board_esp32_s3").CONNECT_SCAN_MS
+        long_scan = self._load("board_guition_4848").CONNECT_SCAN_MS
         for name in _NO_PSRAM_BOARDS:
             mod = self._load(name)
             self.assertGreaterEqual(
                 mod.CONNECT_RETRIES, 2, f"{name} should retry on tight RAM"
             )
             self.assertLessEqual(
-                mod.CONNECT_SCAN_MS, s3_scan, f"{name} window should be <= the S3 window"
+                mod.CONNECT_SCAN_MS, long_scan, f"{name} window should be <= the long window"
             )
 
-    def test_psram_boards_keep_single_long_window(self):
-        for name in _PSRAM_BOARDS:
+    def test_long_window_boards_keep_single_long_window(self):
+        for name in _LONG_WINDOW_BOARDS:
             mod = self._load(name)
             self.assertEqual(mod.CONNECT_RETRIES, 1, f"{name} should not need retries")
             self.assertEqual(mod.CONNECT_SCAN_MS, 15000, f"{name} keeps the 15s window")
+
+    def test_s3_recovers_from_a_hung_connect_quickly(self):
+        mod = self._load("board_esp32_s3")
+        self.assertLessEqual(mod.CONNECT_TIMEOUT_MS, 6000)
+        self.assertGreaterEqual(mod.CONNECT_RETRIES, 2)
 
     def test_all_boards_define_idf_heap_tunables_default_zero(self):
         for name in _ALL_BOARDS:
