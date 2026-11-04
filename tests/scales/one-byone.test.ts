@@ -334,9 +334,17 @@ describe('OneByoneAdapter', () => {
       expect(adapter.sessionDoneAfterMs()).toBeUndefined();
     });
 
-    it('is undefined when the stored record is older than the connect decision by over 3 s', async () => {
+    it('counts a record stamped in the same second as the connect decision', async () => {
       const adapter = makeAdapter();
-      await connectAt(adapter, STAMP + 3_001);
+      await connectAt(adapter, STAMP);
+      adapter.parseNotification(RECORD);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBe(2_000);
+    });
+
+    it('is undefined for a record stamped before the connect decision (a quick swap)', async () => {
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP + 1_000);
       adapter.parseNotification(RECORD);
       adapter.parseNotification(hex('f200'));
       expect(adapter.sessionDoneAfterMs()).toBeUndefined();
