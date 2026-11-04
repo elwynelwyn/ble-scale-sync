@@ -1239,6 +1239,50 @@ describe('processReading: multi-user cue for a weigh-in that arrives as a stored
     expect(contexts.map((c) => c?.userSlug)).toEqual(['mom', 'dad']);
   });
 
+  it('plays the saved cue once the just-taken record has been exported', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+
+    await processReading(ctx, storedOnly(stored(85, ago(30 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+    expect(display.beep.mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(dispatchExports).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('stays silent when the just-taken record is a replay of the weigh-in just exported', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], {
+      display,
+      saved: { dad: { weight: 85, time: ago(40 * SECOND) } },
+    });
+
+    await processReading(ctx, storedOnly(stored(85, ago(40 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(dispatchExports).not.toHaveBeenCalled();
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when every exporter fails for the just-taken record', async () => {
+    vi.mocked(dispatchExports).mockImplementation(
+      withAttempts({ success: false, details: [{ name: 'garmin', ok: false, error: 'down' }] }),
+    );
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+
+    await processReading(ctx, storedOnly(stored(85, ago(30 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
   it('stays silent when the stored records are 10 minutes old', async () => {
     const display = fakeDisplay();
     const ctx = makeCtx([dad, mom], { display });
