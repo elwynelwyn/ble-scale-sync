@@ -1,4 +1,9 @@
-import type { ScaleAdapter, ScaleAuth, UserProfile } from '../../interfaces/scale-adapter.js';
+import type {
+  ScaleAdapter,
+  ScaleAuth,
+  ScaleReading,
+  UserProfile,
+} from '../../interfaces/scale-adapter.js';
 import type { MqttProxyConfig } from '../../config/schema.js';
 import type { RawReading } from '../shared.js';
 import {
@@ -117,6 +122,8 @@ export class ReadingWatcher implements Watcher {
   private deferCounts = new Map<string, number>();
   /** Addresses already told at info level that their GATT session was refused (#422). */
   private readonly refusedGattLogged = new Set<string>();
+  /** When each scale last showed nobody on it, keyed lowercase; see RawReading.steppedOffAt. */
+  private readonly steppedOff = new BoundedMap<string, Date>(64, 'lru');
 
   constructor(
     config: MqttProxyConfig,
@@ -276,6 +283,7 @@ export class ReadingWatcher implements Watcher {
           logAdvert(entry.address, info);
           const adapter = resolveAdapter(info, this.adapters);
           if (!adapter) continue;
+          if (adapter.readyToConnect?.(info) === false) this.noteSteppedOff(entry.address);
 
           const decision = evaluateAdvertisement(adapter, info);
 
@@ -537,6 +545,23 @@ export class ReadingWatcher implements Watcher {
     bleLog.info(line);
   }
 
+  private noteSteppedOff(address: string): void {
+    this.steppedOff.set(address.toLowerCase(), new Date());
+  }
+
+  /** A live frame showing weight 0 means nobody is on the scale. */
+  private watchStepOff(address: string): (reading: ScaleReading) => void {
+    return (reading) => {
+      if (reading.weight === 0 && !reading.fromMemory) this.noteSteppedOff(address);
+    };
+  }
+
+  /** Queue a GATT reading with the time the scale last showed nobody on it. */
+  private pushGattReading(address: string, raw: RawReading): void {
+    const at = this.steppedOff.get(address.toLowerCase());
+    this.queue.push(at ? { ...raw, steppedOffAt: at } : raw);
+  }
+
   private async handleGattReading(entry: ScanResultEntry, adapter: ScaleAdapter): Promise<void> {
     if (this.gattSlot) {
       if (Date.now() - this.gattSlot.startedAt > ReadingWatcher.GATT_STALE_MS) {
@@ -618,12 +643,13 @@ export class ReadingWatcher implements Watcher {
           scaleAuth: this.scaleAuth,
           deviceName: entry.name,
           manufacturerData: toBleDeviceInfo(entry).manufacturerData,
+          onLiveData: this.watchStepOff(entry.address),
         },
         proxyWatcherPolicy(entry.address),
       );
       registerScaleMac(this.config, entry.address, gattAdapter).catch(() => {});
       this.postReading.noteReading(entry.address);
-      this.queue.push(raw);
+      this.pushGattReading(entry.address, raw);
       this.deferCounts.delete(entry.address);
     } finally {
       // End the reading session before dropping the disconnect relay: after a
@@ -778,6 +804,7 @@ export class ReadingWatcher implements Watcher {
           scaleAuth: this.scaleAuth,
           deviceName: info.localName,
           manufacturerData: info.manufacturerData,
+          onLiveData: this.watchStepOff(data.address),
         },
         proxyWatcherPolicy(`${data.address} (autonomous)`),
       );
@@ -786,7 +813,7 @@ export class ReadingWatcher implements Watcher {
       bleLog.info(
         `Autonomous GATT reading complete: ${raw.reading.weight.toFixed(2)} kg from ${data.address}`,
       );
-      this.queue.push(raw);
+      this.pushGattReading(data.address, raw);
     } finally {
       // Same teardown as the host-initiated path: end the session so a timed-out
       // reading releases its notification listeners.

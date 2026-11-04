@@ -3644,6 +3644,73 @@ describe('handler-mqtt-proxy', () => {
       expect(connects()).toBe(1);
       await watcher.stop();
     });
+
+    describe('step-off time on the reading', () => {
+      /** Answer the connect, and the f2 00 request with one final live frame. */
+      async function startScale(): Promise<InstanceType<typeof ReadingWatcher>> {
+        const watcher = new ReadingWatcher(
+          { ...MQTT_PROXY_CONFIG, auto_connect: false },
+          applyForcedAdapter(realAdapters, '1byone (Eufy)'),
+          MAC,
+          PROFILE,
+        );
+        await watcher.start();
+        const origPublish = mockClient.publishAsync;
+        mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+          if (topic === `${PREFIX}/connect`) {
+            queueMicrotask(() =>
+              mockClient._simulateMessage(
+                `${PREFIX}/connected`,
+                JSON.stringify({
+                  address: MAC,
+                  chars: [
+                    { uuid: GATT_WRITE_UUID, properties: ['write'] },
+                    { uuid: GATT_NOTIFY_UUID, properties: ['notify'] },
+                  ],
+                }),
+              ),
+            );
+          }
+          if (topic === `${PREFIX}/write/${GATT_WRITE_UUID}` && Buffer.from(payload!)[0] === 0xf2) {
+            const final = Buffer.from(frame(7240), 'hex');
+            final.writeUInt16LE(4800, 1);
+            final[8] = 1;
+            final[9] = 0x00;
+            let x = 0;
+            for (let i = 0; i < 10; i++) x ^= final[i];
+            final[10] = x;
+            queueMicrotask(() =>
+              mockClient._simulateMessage(`${PREFIX}/notify/${GATT_NOTIFY_UUID}`, final),
+            );
+          }
+          return origPublish(topic, payload);
+        });
+        return watcher;
+      }
+
+      it('carries the time of the last weight-0 advert', async () => {
+        const watcher = await startScale();
+        scan(t9146Advert(frame(0)));
+        const steppedOff = Date.now();
+        await settle();
+        scan(t9146Advert(frame(7240)));
+
+        const raw = await watcher.nextReading();
+        expect(raw.reading.weight).toBe(72.4);
+        expect(raw.steppedOffAt).toBeInstanceOf(Date);
+        expect(raw.steppedOffAt!.getTime()).toBeGreaterThanOrEqual(steppedOff - 5);
+        await watcher.stop();
+      });
+
+      it('leaves it unset when the scale never showed weight 0', async () => {
+        const watcher = await startScale();
+        scan(t9146Advert(frame(7240)));
+
+        const raw = await watcher.nextReading();
+        expect(raw.steppedOffAt).toBeUndefined();
+        await watcher.stop();
+      });
+    });
   });
 
   /**
