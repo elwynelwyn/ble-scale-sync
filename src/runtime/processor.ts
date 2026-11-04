@@ -229,6 +229,11 @@ interface Assigned {
   user: UserConfig;
   /** Drift warning for the live frame (multi-user only). */
   drift?: string;
+  /**
+   * The stored record that gets the saved cue: played once it passes the
+   * replay dedup, before the exporters run, so a slow one cannot delay it.
+   */
+  cue?: boolean;
 }
 
 /**
@@ -293,6 +298,8 @@ async function exportFrame(
     );
     return { dispatched: false, success: true, exported: false };
   }
+
+  if (item.cue) ctx.display?.beep(1200, 200, 2);
 
   const profile = resolveUserProfile(user, ctx.config.scale);
   const payload = computeFrameMetrics(raw.adapter, reading, profile, tagPrefix);
@@ -484,8 +491,6 @@ function skipOutOfRange(
 /**
  * Export the attributed frames in the order the scale produced them (stored
  * records oldest first, then the live weigh-in), and anchor the live one.
- * `cueFrame` gets the saved cue once it has actually been exported, so a
- * replayed copy of a weigh-in that was already cued stays silent.
  */
 async function exportAssigned(
   ctx: AppContext,
@@ -493,7 +498,6 @@ async function exportAssigned(
   items: Assigned[],
   exportersFor: (user: UserConfig) => Exporter[] | undefined,
   prefixFor: (user: UserConfig) => string,
-  cueFrame?: Frame,
 ): Promise<boolean> {
   let lastSuccess = true;
   for (const item of items) {
@@ -505,7 +509,6 @@ async function exportAssigned(
       prefixFor(item.user),
     );
     if (outcome.dispatched) lastSuccess = outcome.success;
-    if (outcome.exported && item.frame === cueFrame) ctx.display?.beep(1200, 200, 2);
     // last_known_weight stores the raw scale value of a live weigh-in that was
     // actually exported. Setting it on a total failure poisoned the retry: the
     // scale reconnects, replays the same weigh-in from memory, and the dedup
@@ -663,7 +666,7 @@ async function processMultiUser(
     if (skipOutOfRange(ctx, user, frame.reading.weight, frameTag(`[${user.name}]`, frame), isCue)) {
       continue;
     }
-    items.push({ frame, user });
+    items.push({ frame, user, ...(isCue ? { cue: true } : {}) });
   }
 
   if (latestLive) {
@@ -709,6 +712,5 @@ async function processMultiUser(
     items,
     (user) => (getExportersForUser ? getExportersForUser(user.slug) : []),
     (user) => `[${user.name}]`,
-    cueFrame,
   );
 }

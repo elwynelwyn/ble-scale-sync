@@ -1239,7 +1239,7 @@ describe('processReading: multi-user cue for a weigh-in that arrives as a stored
     expect(contexts.map((c) => c?.userSlug)).toEqual(['mom', 'dad']);
   });
 
-  it('plays the saved cue once the just-taken record has been exported', async () => {
+  it('plays the saved cue once, before the just-taken record is dispatched', async () => {
     const display = fakeDisplay();
     const ctx = makeCtx([dad, mom], { display });
 
@@ -1248,9 +1248,33 @@ describe('processReading: multi-user cue for a weigh-in that arrives as a stored
     });
 
     expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
-    expect(display.beep.mock.invocationCallOrder[0]).toBeGreaterThan(
+    expect(display.beep.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(dispatchExports).mock.invocationCallOrder[0],
     );
+  });
+
+  it('plays the saved cue before a slow exporter finishes', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    vi.setSystemTime(NOW);
+    vi.mocked(dispatchExports).mockImplementation(async (exporters) => {
+      await new Promise((r) => setTimeout(r, 10_000));
+      const attempts = exporters.map((exporter) => ({
+        exporter,
+        detail: { name: exporter.name, ok: true as const },
+      }));
+      return { success: true, details: attempts.map((a) => a.detail), attempts };
+    });
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+
+    const done = processReading(ctx, storedOnly(stored(85, ago(30 * SECOND))), {
+      getExportersForUser: () => [fakeExporter('garmin')],
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await done;
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
   });
 
   it('stays silent when the just-taken record is a replay of the weigh-in just exported', async () => {
@@ -1268,7 +1292,7 @@ describe('processReading: multi-user cue for a weigh-in that arrives as a stored
     expect(display.beep).not.toHaveBeenCalled();
   });
 
-  it('stays silent when every exporter fails for the just-taken record', async () => {
+  it('has already cued a just-taken record whose exporters then all fail, like a live one', async () => {
     vi.mocked(dispatchExports).mockImplementation(
       withAttempts({ success: false, details: [{ name: 'garmin', ok: false, error: 'down' }] }),
     );
@@ -1280,7 +1304,7 @@ describe('processReading: multi-user cue for a weigh-in that arrives as a stored
     });
 
     expect(dispatchExports).toHaveBeenCalledTimes(1);
-    expect(display.beep).not.toHaveBeenCalled();
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
   });
 
   it('stays silent when the stored records are 10 minutes old', async () => {
