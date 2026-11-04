@@ -35,13 +35,6 @@ const STATUS_OVERWEIGHT = 0x02;
  */
 const STORED_ONLY_GRACE_MS = 2_000;
 
-/**
- * A stored record dated this close before the connect decision, or after it,
- * is the weigh-in that caused the connect. The scale's clock is set to the
- * host's local time each session, to the second.
- */
-const JUST_STORED_MARGIN_MS = 3_000;
-
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
 /**
@@ -54,7 +47,12 @@ class OneByoneSession {
   frameSettled = false;
   /** The scale sent f2 00 after its stored records. */
   historyEnded = false;
-  /** A stored record is the weigh-in this connect was made for (JUST_STORED_MARGIN_MS). */
+  /**
+   * A stored record is dated at or after the connect decision, so it is the
+   * weigh-in this connect was made for: that one completes seconds after the
+   * advert that triggered the connect, while any earlier person's record is
+   * dated before it. Stamps are whole seconds on a clock set from the host.
+   */
   weighInStored = false;
   /** A live frame showed a weight: somebody is on the scale. */
   liveWeight = false;
@@ -236,7 +234,7 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
       }
       this.s.frameSettled = true;
       const decided = this.ctx?.connectDecidedAt;
-      if (decided && timestamp.getTime() >= decided.getTime() - JUST_STORED_MARGIN_MS) {
+      if (decided && timestamp.getTime() >= decided.getTime()) {
         this.s.weighInStored = true;
       }
       return { weight, impedance, timestamp, fromMemory: true };
