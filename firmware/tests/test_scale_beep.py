@@ -206,16 +206,16 @@ class TestResultTimer(unittest.TestCase):
     def test_not_expired_before_timeout(self):
         self.timer.start(1000)
         self.assertFalse(self.timer.expired(1000))
-        self.assertFalse(self.timer.expired(40999))
+        self.assertFalse(self.timer.expired(15999))
 
     def test_expired_at_timeout(self):
         self.timer.start(1000)
-        self.assertTrue(self.timer.expired(41000))
+        self.assertTrue(self.timer.expired(16000))
 
     def test_expires_once(self):
         self.timer.start(0)
-        self.assertTrue(self.timer.expired(45000))
-        self.assertFalse(self.timer.expired(90000))
+        self.assertTrue(self.timer.expired(20000))
+        self.assertFalse(self.timer.expired(60000))
 
     def test_cancel_prevents_expiry(self):
         self.timer.start(0)
@@ -224,23 +224,23 @@ class TestResultTimer(unittest.TestCase):
 
     def test_restart_resets_deadline(self):
         self.timer.start(0)
-        self.timer.start(20000)
-        self.assertFalse(self.timer.expired(45000))
-        self.assertTrue(self.timer.expired(60000))
+        self.timer.start(10000)
+        self.assertFalse(self.timer.expired(20000))
+        self.assertTrue(self.timer.expired(25000))
 
     def test_start_after_expiry_runs_again(self):
         self.timer.start(0)
-        self.assertTrue(self.timer.expired(40000))
-        self.timer.start(50000)
-        self.assertFalse(self.timer.expired(60000))
-        self.assertTrue(self.timer.expired(90000))
+        self.assertTrue(self.timer.expired(15000))
+        self.timer.start(20000)
+        self.assertFalse(self.timer.expired(30000))
+        self.assertTrue(self.timer.expired(35000))
 
     def test_expiry_survives_tick_wrap(self):
         start = _TICKS_MAX - 10000
         with mock.patch.object(ble_bridge, "_ticks_diff", _wrapping_ticks_diff):
             self.timer.start(start)
-            self.assertFalse(self.timer.expired((start + 39999) & _TICKS_MAX))
-            self.assertTrue(self.timer.expired((start + 40000) & _TICKS_MAX))
+            self.assertFalse(self.timer.expired((start + 14999) & _TICKS_MAX))
+            self.assertTrue(self.timer.expired((start + 15000) & _TICKS_MAX))
 
     def test_elapsed_is_none_when_idle(self):
         self.assertIsNone(self.timer.elapsed(5000))

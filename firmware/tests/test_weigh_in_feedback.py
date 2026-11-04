@@ -69,7 +69,7 @@ class WeighInFeedbackTest(unittest.TestCase):
     def test_no_result_beep_plays_problem_sound(self):
         self._scan(7550)
         self.beeps.clear()
-        self.now += 39_999
+        self.now += 14_999
         self.main._check_result_timeout()
         self.assertEqual(self.beeps, [])
         self.now += 1
