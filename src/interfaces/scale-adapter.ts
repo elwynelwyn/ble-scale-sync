@@ -302,6 +302,12 @@ export interface ConnectionContext {
    */
   manufacturerData?: { id: number; data: Buffer };
   /**
+   * When the host decided to connect, on the advertisement that showed a
+   * weigh-in (mqtt-proxy host-initiated connects). Absent elsewhere. Lets an
+   * adapter tell the weigh-in that caused this connect from older stored ones.
+   */
+  connectDecidedAt?: Date;
+  /**
    * Set of characteristic UUIDs (normalized 32-char hex, lowercase) that were
    * actually discovered on the connected device. Adapters with `optional`
    * bindings can use this to detect firmware variants and switch behavior.
@@ -524,9 +530,10 @@ export interface ScaleAdapterCore {
   /**
    * Asked after every notification: milliseconds after which the session may
    * end with what it has (the stored records, or nothing), or undefined to
-   * keep waiting for a live weigh-in. Lets a scale that holds the link long
-   * after its stored records, with nobody on it, be released at once. The
-   * timer starts at the first number and is dropped by the next undefined.
+   * keep waiting for a live weigh-in. Lets a session whose weigh-in already
+   * arrived as a stored record end instead of waiting for the scale to drop
+   * the link. The timer starts at the first number and is dropped by the next
+   * undefined.
    */
   sessionDoneAfterMs?(): number | undefined;
 

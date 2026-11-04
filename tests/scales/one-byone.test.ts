@@ -303,20 +303,57 @@ describe('OneByoneAdapter', () => {
   });
 
   describe('sessionDoneAfterMs()', () => {
-    it('is undefined until the end-of-history marker, then 2 s while nobody is on', async () => {
+    // RECORD is stamped 2026-07-04 16:07:38 on the scale's clock.
+    const STAMP = new Date(2026, 6, 4, 16, 7, 38).getTime();
+    async function connectAt(adapter: OneByoneAdapter, decidedAt: number) {
+      vi.useFakeTimers();
+      try {
+        const done = adapter.onConnected(
+          makeConnectionContext({ connectDecidedAt: new Date(decidedAt) }),
+        );
+        await vi.advanceTimersByTimeAsync(1000);
+        await done;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    it('is 2 s after the marker when the weigh-in this connect was made for is stored', async () => {
       const adapter = makeAdapter();
-      await connect(adapter);
+      await connectAt(adapter, STAMP - 2_000);
       adapter.parseNotification(RECORD);
       expect(adapter.sessionDoneAfterMs()).toBeUndefined();
       adapter.parseNotification(hex('f200'));
       expect(adapter.sessionDoneAfterMs()).toBe(2_000);
-      adapter.parseNotification(withChecksum(MEASURING, (b) => b.writeUInt16LE(0, 3)));
-      expect(adapter.sessionDoneAfterMs()).toBe(2_000);
     });
 
-    it('is undefined once a live frame showed a weight, before or after the marker', async () => {
+    it('is undefined for an empty memory: the weigh-in comes later as the final frame', async () => {
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+    });
+
+    it('is undefined when the stored record is older than the connect decision by over 3 s', async () => {
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP + 3_001);
+      adapter.parseNotification(RECORD);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+    });
+
+    it('is undefined without a connect decision time', async () => {
       const adapter = makeAdapter();
       await connect(adapter);
+      adapter.parseNotification(RECORD);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+    });
+
+    it('is undefined once a live frame showed a weight', async () => {
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP);
+      adapter.parseNotification(RECORD);
       adapter.parseNotification(MEASURING);
       adapter.parseNotification(hex('f200'));
       expect(adapter.sessionDoneAfterMs()).toBeUndefined();
@@ -324,7 +361,8 @@ describe('OneByoneAdapter', () => {
 
     it('starts over on the next connect', async () => {
       const adapter = makeAdapter();
-      await connect(adapter);
+      await connectAt(adapter, STAMP);
+      adapter.parseNotification(RECORD);
       adapter.parseNotification(hex('f200'));
       await connect(adapter);
       expect(adapter.sessionDoneAfterMs()).toBeUndefined();
@@ -343,76 +381,96 @@ describe('OneByoneAdapter', () => {
       buf[10] = xorChecksum(buf, 0, 10);
       return buf.toString('hex');
     }
-    const REC = 'cfb81052211d13cd0000d707ea0704100726';
-    /** The scale holds the link about 30 s after a stored-only dump. */
+    /** Session start; the suite runs in UTC, so the scale's local clock reads the same. */
+    const NOW = Date.UTC(2026, 2, 10, 7, 0, 0);
+    /** A stored record of 71.30 kg / 455.5 ohm measured `offsetMs` from the session start. */
+    function rec(offsetMs: number): string {
+      const at = new Date(NOW + offsetMs);
+      const buf = Buffer.concat([hex(live(71.3, 455.5, 0x00)), Buffer.alloc(7)]);
+      buf[8] = 0;
+      buf.writeUInt16BE(at.getUTCFullYear(), 11);
+      buf[13] = at.getUTCMonth() + 1;
+      buf[14] = at.getUTCDate();
+      buf[15] = at.getUTCHours();
+      buf[16] = at.getUTCMinutes();
+      buf[17] = at.getUTCSeconds();
+      buf[10] = xorChecksum(buf, 0, 10);
+      return buf.toString('hex');
+    }
+    /** The scale drops the link up to ~30 s after the history dump; `f3 00` alone does not end it. */
     const trace = (steps: [number, string][]): Trace => ({
       provenance: 'derived',
       source: 'shaped on production T9146 session logs',
       disconnectAtMs: 30_000,
       steps: steps.map(([atMs, h]) => ({ atMs, dir: 'rx', hex: h })),
     });
+    /** Connect decided 5 s before the session start, as the advert came in. */
+    const opts = { now: NOW, connectDecidedAtMs: -5_000 };
 
-    it('hands the stored record over 2 s after the marker instead of at the disconnect', async () => {
+    it('hands the just-stored weigh-in over 2 s after the marker', async () => {
       const r = await replaySession(
         makeAdapter(),
         trace([
-          [400, REC],
+          [400, rec(-3_000)],
           [500, 'f200'],
         ]),
+        opts,
       );
       expect(r.settled).toEqual({ by: 'reading', atMs: 2_500 });
       expect(r.reading!.fromMemory).toBe(true);
       expect(r.writes.map((w) => w.hex)).toContain('f201');
     });
 
-    it('ends an empty-memory session 2 s after the marker, with no reading', async () => {
-      const r = await replaySession(makeAdapter(), trace([[300, 'f200']]));
-      expect(r.settled).toEqual({
-        by: 'error',
-        atMs: 2_300,
-        error: 'Scale sent no stored records and nobody stepped on',
-      });
-    });
-
-    it('keeps waiting when weight-0 live frames follow the marker', async () => {
+    it('waits through f3 00 for the final frame after an empty dump (production, mid-measurement connect)', async () => {
       const r = await replaySession(
         makeAdapter(),
         trace([
           [300, 'f200'],
-          [800, live(0)],
-          [1_300, live(0)],
+          [2_250, 'f300'],
+          [4_500, live(71.3, 455.5, 0x00)],
         ]),
+        opts,
       );
-      expect(r.settled.atMs).toBe(2_300);
+      expect(r.settled).toEqual({ by: 'reading', atMs: 4_500 });
+      expect(r.reading!.weight).toBe(71.3);
+      expect(r.reading!.fromMemory).toBeUndefined();
     });
 
-    it('waits for the live weigh-in when somebody steps on within the grace', async () => {
+    it('waits for the final frame when the only stored record is an older weigh-in', async () => {
       const r = await replaySession(
         makeAdapter(),
         trace([
-          [400, REC],
-          [500, 'f200'],
-          [2_000, live(42.1)],
-          [4_000, live(71.3)],
-          [9_000, live(71.3, 455.5, 0x00)],
+          [300, rec(-15_000)],
+          [400, 'f200'],
+          [2_800, live(71.3, 455.5, 0x00)],
         ]),
+        opts,
       );
-      expect(r.settled).toEqual({ by: 'reading', atMs: 9_000 });
-      expect(r.reading!.weight).toBe(71.3);
+      expect(r.settled).toEqual({ by: 'reading', atMs: 2_800 });
       expect(r.history).toHaveLength(1);
     });
 
-    it('waits for the live weigh-in when a live weight came before the stored records', async () => {
+    it('keeps an empty-memory session open until the scale drops the link', async () => {
+      const r = await replaySession(makeAdapter(), trace([[300, 'f200']]), opts);
+      expect(r.settled).toEqual({
+        by: 'error',
+        atMs: 30_000,
+        error: 'Scale disconnected before reading completed',
+      });
+    });
+
+    it('waits for the live weigh-in when somebody steps on during the session', async () => {
       const r = await replaySession(
         makeAdapter(),
         trace([
           [0, live(20.8)],
-          [100, REC],
+          [100, rec(-3_000)],
           [400, live(20.8)],
           [450, 'f200'],
           [4_000, live(71.3)],
           [10_000, live(71.3, 455.5, 0x00)],
         ]),
+        opts,
       );
       expect(r.settled).toEqual({ by: 'reading', atMs: 10_000 });
       expect(r.history).toHaveLength(1);

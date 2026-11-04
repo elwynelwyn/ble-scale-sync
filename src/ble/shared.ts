@@ -15,7 +15,16 @@ import { adapterSuffix, resolveChar, resolveWriteChar, subscribeToChar } from '.
 
 /** Run adapter.onConnected() or fall back to legacy unlock-command interval. */
 function initializeAdapter(
-  { charMap, adapter, profile, address, scaleAuth, deviceName, manufacturerData }: SessionRequest,
+  {
+    charMap,
+    adapter,
+    profile,
+    address,
+    scaleAuth,
+    deviceName,
+    manufacturerData,
+    connectDecidedAt,
+  }: SessionRequest,
   isResolved: () => boolean,
   onNotification: (sourceUuid: string, data: Buffer) => void,
   unsubscribers: (() => void)[],
@@ -102,6 +111,7 @@ function initializeAdapter(
         deviceAddress: address,
         ...(deviceName ? { deviceName } : {}),
         ...(manufacturerData ? { manufacturerData } : {}),
+        ...(connectDecidedAt ? { connectDecidedAt } : {}),
         availableChars,
         write: async (charUuid, data, withResponse = true) => {
           const char = resolveChar(charMap, charUuid);
@@ -409,6 +419,8 @@ export interface SessionRequest {
   /** What the device advertised, for `ConnectionContext`. */
   deviceName?: string;
   manufacturerData?: { id: number; data: Buffer };
+  /** `ConnectionContext.connectDecidedAt`. */
+  connectDecidedAt?: Date;
   onLiveData?: (reading: ScaleReading) => void;
   /**
    * Restarts the caller's idle timeout; called for every frame except one the
@@ -703,7 +715,7 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
       reject(
         new Error(
           cause === SESSION_DONE
-            ? 'Scale sent no stored records and nobody stepped on'
+            ? 'Scale done sending without a reading'
             : 'Scale disconnected before reading completed',
         ),
       );
