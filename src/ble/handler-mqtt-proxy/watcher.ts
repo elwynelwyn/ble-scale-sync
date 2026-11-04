@@ -283,7 +283,7 @@ export class ReadingWatcher implements Watcher {
           logAdvert(entry.address, info);
           const adapter = resolveAdapter(info, this.adapters);
           if (!adapter) continue;
-          if (adapter.readyToConnect?.(info) === false) this.noteSteppedOff(entry.address);
+          if (adapter.advertisesNoWeight?.(info) === true) this.noteSteppedOff(entry.address);
 
           const decision = evaluateAdvertisement(adapter, info);
 

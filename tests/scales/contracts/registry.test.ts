@@ -52,6 +52,7 @@ const HOOKS = [
   'isStatusFrame',
   'advertisesPendingReading',
   'readyToConnect',
+  'advertisesNoWeight',
   'sessionDoneAfterMs',
   'dedupMark',
   'restoreDedupMark',

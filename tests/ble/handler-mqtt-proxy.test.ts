@@ -3710,6 +3710,39 @@ describe('handler-mqtt-proxy', () => {
         expect(raw.steppedOffAt).toBeUndefined();
         await watcher.stop();
       });
+
+      it('records the all-zero wake region as a step-off', async () => {
+        const watcher = await startScale();
+        scan(t9146Advert(ALL_ZERO));
+        await settle();
+        scan(t9146Advert(frame(7240)));
+
+        expect((await watcher.nextReading()).steppedOffAt).toBeInstanceOf(Date);
+        await watcher.stop();
+      });
+
+      /** `frame(centikg)` with status `status` and the checksum redone. */
+      function withStatus(centikg: number, status: number): string {
+        const buf = Buffer.from(frame(centikg), 'hex');
+        buf[9] = status;
+        let x = 0;
+        for (let i = 0; i < 10; i++) x ^= buf[i];
+        buf[10] = x;
+        return buf.toString('hex');
+      }
+
+      it.each([
+        ['a corrupt frame', `${frame(0).slice(0, 20)}ff`],
+        ['a frame over the weight limit', withStatus(0, 0x02)],
+      ])('does not record %s as a step-off', async (_what, region) => {
+        const watcher = await startScale();
+        scan(t9146Advert(region));
+        await settle();
+        scan(t9146Advert(frame(7240)));
+
+        expect((await watcher.nextReading()).steppedOffAt).toBeUndefined();
+        await watcher.stop();
+      });
     });
   });
 

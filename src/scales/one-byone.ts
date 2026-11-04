@@ -65,19 +65,26 @@ function recordTime(data: Buffer): Date | undefined {
   return new Date(year, month - 1, day, data[15], data[16], data[17]);
 }
 
-/**
- * The weight in kg of the first 0xCF frame in advertised manufacturer data,
- * found by its checksum, or undefined when there is none or it is over the
- * weight limit.
- */
-function advertisedWeight(data: Buffer): number | undefined {
+/** Offset of the first 0xCF frame in advertised manufacturer data, found by its checksum. */
+function advertisedFrameAt(data: Buffer): number | undefined {
   for (let i = 0; i + 11 <= data.length; i++) {
-    if (data[i] !== 0xcf || xorChecksum(data, i, i + 10) !== data[i + 10]) continue;
-    if (data[i + 9] === STATUS_OVERWEIGHT) return undefined;
-    return data.readUInt16LE(i + 3) / 100;
+    if (data[i] === 0xcf && xorChecksum(data, i, i + 10) === data[i + 10]) return i;
   }
   return undefined;
 }
+
+/**
+ * The weight in kg of the advertised 0xCF frame, or undefined when there is
+ * none or it is over the weight limit.
+ */
+function advertisedWeight(data: Buffer): number | undefined {
+  const i = advertisedFrameAt(data);
+  if (i === undefined || data[i + 9] === STATUS_OVERWEIGHT) return undefined;
+  return data.readUInt16LE(i + 3) / 100;
+}
+
+/** The frame region the scale advertises while it wakes: 11 zero bytes. */
+const EMPTY_FRAME = Buffer.alloc(11);
 
 /**
  * Adapter for Eufy C1/P1/A1 (T9146/T9147/T9120) and "Health Scale" branded
@@ -147,6 +154,14 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
     const data = device.manufacturerData?.data;
     if (!data || data.length === 0) return true;
     return (advertisedWeight(data) ?? 0) > 0;
+  }
+
+  /** A valid frame with weight 0, or the all-zero frame region the scale wakes with. */
+  advertisesNoWeight(device: BleDeviceInfo): boolean {
+    const data = device.manufacturerData?.data;
+    if (!data) return false;
+    if (advertisedFrameAt(data) !== undefined) return advertisedWeight(data) === 0;
+    return data.includes(EMPTY_FRAME);
   }
 
   /** Clock sync, then the request for stored records, paced like the app. */
