@@ -923,6 +923,7 @@
       "onSessionEnd",
       "isFinal",
       "readyToConnect",
+      "advertisesNoWeight",
       "sessionDoneAfterMs"
     ]
   },

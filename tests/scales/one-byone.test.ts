@@ -266,6 +266,40 @@ describe('OneByoneAdapter', () => {
         true,
       );
     });
+
+    describe('advertisesNoWeight()', () => {
+      const noWeight = (frame: Buffer) => makeAdapter().advertisesNoWeight(advert(frame));
+
+      it('is true for a valid frame with weight 0', () => {
+        expect(noWeight(withChecksum(MEASURING, (b) => b.writeUInt16LE(0, 3)))).toBe(true);
+      });
+
+      it('is true for the all-zero frame region the scale wakes with', () => {
+        expect(noWeight(Buffer.alloc(11))).toBe(true);
+      });
+
+      it('is false for a frame showing a weight', () => {
+        expect(noWeight(WEIGHING)).toBe(false);
+      });
+
+      it('is false for a corrupt frame', () => {
+        const bad = Buffer.from(WEIGHING);
+        bad[10] ^= 0xff;
+        expect(noWeight(bad)).toBe(false);
+      });
+
+      it('is false for a frame over the weight limit (status 0x02): somebody is on it', () => {
+        expect(noWeight(withChecksum(MEASURING, (b) => (b[9] = 0x02)))).toBe(false);
+        expect(
+          noWeight(withChecksum(MEASURING, (b) => (b.writeUInt16LE(0, 3), (b[9] = 0x02)))),
+        ).toBe(false);
+      });
+
+      it('is false for truncated or missing manufacturer data', () => {
+        expect(noWeight(Buffer.alloc(5))).toBe(false);
+        expect(makeAdapter().advertisesNoWeight(mockPeripheral('eufy T9146'))).toBe(false);
+      });
+    });
   });
 
   describe('sessionDoneAfterMs()', () => {
