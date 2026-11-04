@@ -90,7 +90,7 @@ const START = new Date(2026, 2, 10, 7, 30, 0);
 const TICK_MS = 500;
 const RESULT_TIMEOUT_MS = 15_000;
 const RESULT_AFTER_SESSION_MS = 3_000;
-const RESULT_HARD_CAP_MS = 45_000;
+const RESULT_HARD_CAP_MS = 60_000;
 const SCALE_REARM_MS = 30_000;
 /** How long the scale stays awake advertising weight 0 after a step-off. */
 const AWAKE_AFTER_MS = 20_000;
@@ -189,6 +189,8 @@ interface ScaleOptions {
   holdMs?: number;
   /** On a reconnect while the person is still on, stream the finished weigh-in live again. */
   resendLive?: boolean;
+  /** Ticks at which the advertised frame region arrives corrupt (bad checksum). */
+  corruptAt?: number[];
 }
 
 class FakeScale {
@@ -212,6 +214,14 @@ class FakeScale {
 
   /** The 0xCF frame region the scale advertises now, or undefined while asleep. */
   advert(t: number): Buffer | undefined {
+    const region = this.region(t);
+    if (!region || !this.opts.corruptAt?.includes(t)) return region;
+    const corrupt = Buffer.from(region);
+    corrupt[10] ^= 0xff;
+    return corrupt;
+  }
+
+  private region(t: number): Buffer | undefined {
     for (const w of this.weighIns) {
       if (t >= w.on && t < w.off) {
         return t < w.settle ? frame(w.kg, 0, 0, 0x01) : frame(w.kg, 0, 1, 0x00);
@@ -693,6 +703,23 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     await run(60_000);
 
     expect(esp.connects.length).toBeGreaterThan(2);
+    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
+    expectOneCuePerWeighIn(1);
+    await server.stop();
+  });
+
+  it('3c. the person stays on, a corrupt advert in between is no step-off: the re-stream is skipped', async () => {
+    setUp([{ ...ALEX_WEIGH_IN, off: 40_000 }], {
+      resendLive: true,
+      corruptAt: [11_500, 12_000],
+    });
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(60_000);
+
+    expect(esp.connects.length).toBeGreaterThan(2);
+    expect(esp.connects).not.toContain(11_500);
     expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
     expectOneCuePerWeighIn(1);
     await server.stop();
