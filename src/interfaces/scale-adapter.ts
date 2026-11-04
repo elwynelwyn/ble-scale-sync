@@ -513,6 +513,15 @@ export interface ScaleAdapterCore {
   onSessionEnd?(): void;
 
   /**
+   * Asked after every notification: milliseconds after which the session may
+   * end with what it has (the stored records, or nothing), or undefined to
+   * keep waiting for a live weigh-in. Lets a scale that holds the link long
+   * after its stored records, with nobody on it, be released at once. The
+   * timer starts at the first number and is dropped by the next undefined.
+   */
+  sessionDoneAfterMs?(): number | undefined;
+
+  /**
    * De-duplication state that has to survive a process restart (review D-15).
    *
    * For a scale that answers every session from a store it never clears

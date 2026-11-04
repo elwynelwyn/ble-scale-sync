@@ -196,6 +196,9 @@ const sessionEnders = new WeakMap<
 /** The cause waitForRawReading's own disconnect callback ends a session with. */
 const DISCONNECTED = 'Disconnected';
 
+/** The cause a session ends with when its adapter's sessionDoneAfterMs elapses. */
+const SESSION_DONE = 'Scale done sending';
+
 /**
  * Run a bounded reading session and make sure an abandoned one cleans up.
  *
@@ -441,6 +444,7 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
       resolved = true;
       hold.clear();
       clearCaptureHold();
+      clearDoneTimer();
       init.cleanup();
       process.stdout.write('\r' + ' '.repeat(80) + '\r');
       bleLog.info(`Reading complete: ${r.weight.toFixed(2)} kg / ${r.impedance} Ohm`);
@@ -474,6 +478,28 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
         clearTimeout(captureHoldTimer);
         captureHoldTimer = null;
       }
+    };
+
+    let doneTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearDoneTimer = (): void => {
+      if (doneTimer) {
+        clearTimeout(doneTimer);
+        doneTimer = null;
+      }
+    };
+    /** End the session once the adapter says nothing more is coming (sessionDoneAfterMs). */
+    const checkSessionDone = (): void => {
+      if (!adapter.sessionDoneAfterMs) return;
+      const ms = adapter.sessionDoneAfterMs();
+      if (ms === undefined) {
+        clearDoneTimer();
+        return;
+      }
+      if (doneTimer) return;
+      doneTimer = setTimeout(() => {
+        doneTimer = null;
+        endSession(SESSION_DONE);
+      }, ms);
     };
 
     const handleNotification = (sourceUuid: string, data: Buffer): void => {
@@ -536,6 +562,7 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
       const reading: ScaleReading | null = adapter.parseCharNotification
         ? adapter.parseCharNotification(sourceUuid, data)
         : adapter.parseNotification(data);
+      checkSessionDone();
       if (!reading) return;
 
       if (onLiveData) onLiveData(reading);
@@ -608,6 +635,7 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
       if (resolved) return undefined;
       hold.clear();
       clearCaptureHold();
+      clearDoneTimer();
       if (!handOver) {
         resolved = true;
         init.cleanup();
@@ -666,7 +694,13 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
       // would treat the session as live.
       resolved = true;
       init.cleanup();
-      reject(new Error('Scale disconnected before reading completed'));
+      reject(
+        new Error(
+          cause === SESSION_DONE
+            ? 'Scale sent no stored records and nobody stepped on'
+            : 'Scale disconnected before reading completed',
+        ),
+      );
       return undefined;
     };
     bleDevice.onDisconnect(() => {
@@ -692,6 +726,7 @@ export function waitForRawReading(req: SessionRequest): Promise<RawReading> {
         resolved = true;
         hold.clear();
         clearCaptureHold();
+        clearDoneTimer();
         init.cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
       }
