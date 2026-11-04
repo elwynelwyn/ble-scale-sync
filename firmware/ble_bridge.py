@@ -36,7 +36,7 @@ SCALE_REARM_MS = 30000
 
 # A weigh-in that has produced no result beep from the server within this long
 # is reported with PROBLEM_BEEP (freq Hz, duration ms, repeat).
-RESULT_TIMEOUT_MS = 40000
+RESULT_TIMEOUT_MS = 15000
 PROBLEM_BEEP = (400, 500, 2)
 
 try:
