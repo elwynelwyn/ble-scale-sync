@@ -386,6 +386,12 @@ export interface RawReading {
    * frame, with the rest in `history`.
    */
   history?: ScaleReading[];
+  /**
+   * When the scale last showed nobody on it (a weight-0 advertisement or live
+   * frame) before this reading was handed over, on the host clock. Unset when
+   * the transport does not track it.
+   */
+  steppedOffAt?: Date;
 }
 
 /** One GATT reading session: everything waitForRawReading runs on. */

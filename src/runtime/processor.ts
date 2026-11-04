@@ -384,13 +384,23 @@ function anchorTime(frame: Frame): Date {
  * say so. A scale still on after its reading is connected again
  * (POST_READING_RECONNECT_MS) and may stream that weigh-in live once more. Same
  * weight within DEDUP_KG_TOLERANCE, dated within the reconnect window of the
- * anchor on the clock the anchor was dated by. Impedance is not compared: a
- * repeat that settled without its impedance frame is still the same weigh-in.
+ * anchor on the clock the anchor was dated by, and the person never stepped off
+ * in between: a scale that showed weight 0 after the anchor (`steppedOffAt`)
+ * was stepped on again, so that is a new weigh-in. Without that signal the
+ * person is taken to have stayed on. Impedance is not compared: a repeat that
+ * settled without its impedance frame is still the same weigh-in.
  */
-function skipLiveRepeat(ctx: AppContext, user: UserConfig, frame: Frame, prefix: string): boolean {
+function skipLiveRepeat(
+  ctx: AppContext,
+  raw: RawReading,
+  user: UserConfig,
+  frame: Frame,
+  prefix: string,
+): boolean {
   const weight = ctx.lastExportedWeights.get(user.slug);
   const anchorAt = ctx.lastExportedAt.get(user.slug);
   if (weight === undefined || anchorAt === undefined) return false;
+  if (raw.steppedOffAt && raw.steppedOffAt.getTime() > anchorAt.getTime()) return false;
   if (Math.abs(frame.reading.weight - weight) >= DEDUP_KG_TOLERANCE) return false;
   const apartMs = Math.abs(anchorTime(frame).getTime() - anchorAt.getTime());
   if (apartMs > POST_READING_RECONNECT_MS) return false;
@@ -570,7 +580,7 @@ async function processSingleUser(
     // Before the update check and before any export, so a skipped reading
     // leaves nothing behind but the log line and the error beep.
     if (skipOutOfRange(ctx, user, frame.reading.weight, '', true)) continue;
-    if (skipLiveRepeat(ctx, user, frame, '')) continue;
+    if (skipLiveRepeat(ctx, raw, user, frame, '')) continue;
     items.push({ frame, user });
   }
   if (items.length === 0) return true;
@@ -680,7 +690,7 @@ async function processMultiUser(
       // by any range containing this one (#395).
       if (
         !skipOutOfRange(ctx, user, latestLive.reading.weight, prefix, true) &&
-        !skipLiveRepeat(ctx, user, latestLive, prefix)
+        !skipLiveRepeat(ctx, raw, user, latestLive, prefix)
       ) {
         log.info(`${prefix} Matched (tier: ${match.tier})`);
         ctx.display?.beep(1200, 200, 2);
