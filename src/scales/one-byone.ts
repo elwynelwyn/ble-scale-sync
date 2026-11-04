@@ -29,10 +29,18 @@ const STATUS_MEASURING = 0x01;
 const STATUS_OVERWEIGHT = 0x02;
 
 /**
- * How long after the end of the stored records a session with no live weight
- * waits for somebody to step on. The scale itself holds the link about 30 s.
+ * How long after the end of the stored records a session whose weigh-in is
+ * already among them waits before it ends. The scale itself holds the link up
+ * to about 30 s.
  */
 const STORED_ONLY_GRACE_MS = 2_000;
+
+/**
+ * A stored record dated this close before the connect decision, or after it,
+ * is the weigh-in that caused the connect. The scale's clock is set to the
+ * host's local time each session, to the second.
+ */
+const JUST_STORED_MARGIN_MS = 3_000;
 
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
@@ -46,6 +54,8 @@ class OneByoneSession {
   frameSettled = false;
   /** The scale sent f2 00 after its stored records. */
   historyEnded = false;
+  /** A stored record is the weigh-in this connect was made for (JUST_STORED_MARGIN_MS). */
+  weighInStored = false;
   /** A live frame showed a weight: somebody is on the scale. */
   liveWeight = false;
 }
@@ -225,6 +235,10 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
         return null;
       }
       this.s.frameSettled = true;
+      const decided = this.ctx?.connectDecidedAt;
+      if (decided && timestamp.getTime() >= decided.getTime() - JUST_STORED_MARGIN_MS) {
+        this.s.weighInStored = true;
+      }
       return { weight, impedance, timestamp, fromMemory: true };
     }
 
@@ -235,9 +249,16 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
     return { weight, impedance };
   }
 
-  /** Once the stored records are in and nobody is on the scale, end shortly instead of after ~30 s. */
+  /**
+   * End shortly after the stored records only when the weigh-in this connect
+   * was made for is among them: then no live frame will come. A connect made
+   * mid-measurement gets no live frames and only the final one, seconds after
+   * the stored records, so any other session waits for it or for the scale.
+   */
   sessionDoneAfterMs(): number | undefined {
-    return this.s.historyEnded && !this.s.liveWeight ? STORED_ONLY_GRACE_MS : undefined;
+    return this.s.historyEnded && this.s.weighInStored && !this.s.liveWeight
+      ? STORED_ONLY_GRACE_MS
+      : undefined;
   }
 
   /** A settled weight completes the reading; frames still measuring only feed the live display. */

@@ -390,7 +390,7 @@ export class ReadingWatcher implements Watcher {
           }
 
           const sinceReading = this.postReading.sinceReading(entry.address);
-          this.handleGattReading(entry, adapter).catch((err) =>
+          this.handleGattReading(entry, adapter, new Date()).catch((err) =>
             this.reportGattFailure('GATT reading', entry.address, err, sinceReading),
           );
         }
@@ -562,7 +562,11 @@ export class ReadingWatcher implements Watcher {
     this.queue.push(at ? { ...raw, steppedOffAt: at } : raw);
   }
 
-  private async handleGattReading(entry: ScanResultEntry, adapter: ScaleAdapter): Promise<void> {
+  private async handleGattReading(
+    entry: ScanResultEntry,
+    adapter: ScaleAdapter,
+    connectDecidedAt: Date,
+  ): Promise<void> {
     if (this.gattSlot) {
       if (Date.now() - this.gattSlot.startedAt > ReadingWatcher.GATT_STALE_MS) {
         bleLog.warn('gattInProgress stuck for >90s, auto-resetting');
@@ -643,6 +647,7 @@ export class ReadingWatcher implements Watcher {
           scaleAuth: this.scaleAuth,
           deviceName: entry.name,
           manufacturerData: toBleDeviceInfo(entry).manufacturerData,
+          connectDecidedAt,
           onLiveData: this.watchStepOff(entry.address),
         },
         proxyWatcherPolicy(entry.address),

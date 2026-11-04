@@ -40,6 +40,8 @@ export interface ReplayOptions {
    * UTC, where a scale clock on local time and one on UTC read the same.
    */
   timeZone?: string;
+  /** `ConnectionContext.connectDecidedAt`, in ms from the session start (may be negative). */
+  connectDecidedAtMs?: number;
 }
 
 /** What a module under tests/fixtures/ exports as `session` to have its traces replayed and pinned. */
@@ -101,6 +103,9 @@ function startSession(
     scaleAuth: o.scaleAuth,
     deviceName: trace.advert?.localName || undefined,
     manufacturerData: trace.advert?.manufacturerData,
+    ...(o.connectDecidedAtMs !== undefined
+      ? { connectDecidedAt: new Date(Date.now() + o.connectDecidedAtMs) }
+      : {}),
   });
 }
 
