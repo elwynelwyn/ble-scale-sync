@@ -108,6 +108,8 @@ const LIVE_FRAME_MS = 250;
 const PENDING_FINAL_MS = 500;
 /** From the end of a GATT session to the next scan batch; the server reconnects ~1.5 s after a save. */
 const RESUME_SCAN_MS = 1_000;
+/** The server's measurement window (one-byone.ts MEASUREMENT_WINDOW_MS). */
+const MEASUREMENT_WINDOW_MS = 20_000;
 
 const MQTT_PROXY: MqttProxyConfig = {
   broker_url: 'mqtt://localhost:1883',
@@ -153,7 +155,7 @@ interface WeighIn {
   on: number;
   settle: number;
   off: number;
-  /** Measurement complete: the final (impedance) frame, live or as a stored record. */
+  /** Measurement complete: the final (impedance) frame, live or as a stored record. Infinity: never. */
   final: number;
 }
 
@@ -226,7 +228,9 @@ class FakeScale {
     readonly notify: (data: Buffer) => void,
     readonly disconnect: () => void,
   ) {
-    for (const w of weighIns) setTimeout(() => this.complete(w), w.final);
+    for (const w of weighIns) {
+      if (Number.isFinite(w.final)) setTimeout(() => this.complete(w), w.final);
+    }
   }
 
   private store(w: WeighIn): void {
@@ -726,10 +730,14 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     expect(esp.serverCues.map((c) => c.repeat)).toEqual([2]);
     expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
     expectOneCuePerWeighIn(1);
-    // The replayed record is dated before this reconnect's decision, so no early end.
+    // The replayed record is dated before this reconnect's weigh-in start, so the
+    // server waits out the 20 s measurement window, not the scale's 30 s.
     const reconnects = esp.sessions.slice(1);
     expect(reconnects.length).toBeGreaterThan(0);
-    for (const s of reconnects) expect(s.by).toBe('scale');
+    reconnects.forEach((s, i) => {
+      expect(s.by).toBe('server');
+      expect(s.end).toBe(esp.connects[i + 1] + MEASUREMENT_WINDOW_MS);
+    });
     await server.stop();
   });
 
@@ -859,20 +867,33 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
   });
 
   // The firmware's connect retry worst cases: a hung attempt, then a healthy one.
+  // A measurement takes 7.5-10.2 s in production, so only the 13 s connect can
+  // still catch the final live (a 10.7 s measurement); after 19 s it is stored.
+  it('6c. connect takes 13 s, person still on, a slow measurement: the final arrives live', async () => {
+    const slow: WeighIn = { ...ALEX_WEIGH_IN, off: 16_000, final: ALEX_WEIGH_IN.on + 10_700 };
+    setUp([slow]);
+    esp.connectPlan = [{ delayMs: 13_000 }];
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(30_000);
+
+    expect(esp.connects).toEqual([ALEX_WEIGH_IN.on]);
+    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
+    expectOneCuePerWeighIn(1);
+    await server.stop();
+  });
+
   describe.each([13_000, 19_000])('6c. connect takes %i ms', (delayMs) => {
-    it('person still on when it connects: the weigh-in arrives live, one cue, no problem sound', async () => {
-      const off = ALEX_WEIGH_IN.on + delayMs + 2_000;
-      const stillOn: WeighIn = { ...ALEX_WEIGH_IN, off, final: off + 4_000 };
-      setUp([stillOn]);
+    it('person still on but measured before the link: the stored weigh-in, one cue', async () => {
+      setUp([{ ...ALEX_WEIGH_IN, off: ALEX_WEIGH_IN.on + delayMs + 2_000 }]);
       esp.connectPlan = [{ delayMs }];
       const exports: Exported[] = [];
       const server = await startServer(exports);
 
-      await run(stillOn.final + 10_000);
+      await run(ALEX_WEIGH_IN.on + delayMs + 15_000);
 
-      expect(esp.connects).toEqual([ALEX_WEIGH_IN.on]);
-      expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
-      expect(esp.serverCues[0].at - esp.startBeeps[0]).toBeGreaterThan(RESULT_TIMEOUT_MS);
+      expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: true }]);
       expectOneCuePerWeighIn(1);
       await server.stop();
     });
@@ -932,6 +953,76 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     ]);
     expectOneCuePerWeighIn(2);
     expect(esp.sessions[1].end).toBeGreaterThanOrEqual(sam.final);
+    await server.stop();
+  });
+
+  it('R6. production: silent mid-measurement session, final 3 s after subscribe -> 2-beep', async () => {
+    const w: WeighIn = { ...ALEX_WEIGH_IN, settle: 4_000, off: 5_000, final: 8_000 };
+    setUp([w]);
+    esp.connectPlan = [{ delayMs: 3_500 }];
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(15_000);
+
+    expect(esp.sessions[0].end).toBe(w.final);
+    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
+    expectOneCuePerWeighIn(1);
+    await server.stop();
+  });
+
+  it('R6-abort. no final ever: the session ends at start + 20 s, problem sound 3 s later', async () => {
+    setUp([{ ...ALEX_WEIGH_IN, off: 12_000, final: Infinity }]);
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(40_000);
+
+    expect(esp.sessions[0]).toMatchObject({
+      end: ALEX_WEIGH_IN.on + MEASUREMENT_WINDOW_MS,
+      by: 'server',
+    });
+    expect(esp.serverCues).toEqual([]);
+    expect(esp.problemBeeps).toEqual([ALEX_WEIGH_IN.on + MEASUREMENT_WINDOW_MS + 3_000]);
+    expect(exports).toEqual([]);
+    await server.stop();
+  });
+
+  it('R7. production: first connect fails after 30 s, the retry gets the stored weigh-in -> early end', async () => {
+    // Completes 6 s after the first decision while the first attempt hangs; still on at the retry.
+    setUp([{ ...ALEX_WEIGH_IN, settle: 4_500, off: 34_000, final: 7_500 }]);
+    esp.connectPlan = [{ delayMs: 30_000, fail: true }, { delayMs: 3_400 }];
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(60_000);
+
+    expect(esp.connects).toEqual([ALEX_WEIGH_IN.on, 32_500]);
+    const retry = esp.sessions[0];
+    expect(retry.by).toBe('server');
+    expect(retry.end! - retry.start).toBe(1_000 + 2_000);
+    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: true }]);
+    expectOneCuePerWeighIn(1);
+    await server.stop();
+  });
+
+  it('R8. production: nothing stored, retry gets an empty dump -> ends, problem sound, nothing exported', async () => {
+    setUp([{ ...ALEX_WEIGH_IN, off: 26_500, final: Infinity }]);
+    esp.connectPlan = [{ delayMs: 23_200, fail: true }, { delayMs: 3_400 }];
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(60_000);
+
+    expect(esp.connects).toHaveLength(2);
+    const retry = esp.sessions[0];
+    const dumpAt = retry.start + 1_000;
+    expect(retry.by).toBe('server');
+    expect(retry.end).toBe(Math.max(dumpAt + 2_000, ALEX_WEIGH_IN.on + MEASUREMENT_WINDOW_MS));
+    expect(esp.serverCues).toEqual([]);
+    expect(esp.problemBeeps).toHaveLength(1);
+    expect(esp.problemBeeps[0] - esp.startBeeps[0]).toBeLessThanOrEqual(35_000);
+    expect(exports).toEqual([]);
     await server.stop();
   });
 
@@ -1030,8 +1121,8 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
       server = await startServer(exports, { anchorsPath: anchors });
       await run(40_000);
 
-      // The reconnect's replay was handed over when the scale dropped the link.
-      expect(esp.sessions[1].by).toBe('scale');
+      // The reconnect's replay was handed over when the measurement window closed.
+      expect(esp.sessions[1].by).toBe('server');
       expect(esp.connects.length).toBeGreaterThan(1);
       expect(esp.serverCues.map((c) => c.repeat)).toEqual([2]);
       expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
