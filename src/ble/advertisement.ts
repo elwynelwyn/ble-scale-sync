@@ -67,7 +67,8 @@ export type AdvertisementDecision =
   /** A weight-only frame from a passive adapter — start/refresh a grace timer. */
   | { kind: 'partial'; reading: ScaleReading }
   /** No usable reading yet, but the device still carries a parseable broadcast
-   *  source — keep waiting for a future advertisement. `live` carries what the
+   *  source or its adapter's `readyToConnect` declined this advertisement:
+   *  keep waiting for a future advertisement. `live` carries what the
    *  scale is DISPLAYING while you wait, when the adapter decodes it (#356). It
    *  is not a reading and must never be treated as one. */
   | { kind: 'wait'; live?: LiveWeight }
@@ -142,6 +143,9 @@ export function evaluateAdvertisement(
   }
   if (!adapter.charNotifyUuid) {
     return { kind: 'none' };
+  }
+  if (adapter.readyToConnect && !adapter.readyToConnect(info)) {
+    return { kind: 'wait' };
   }
   return { kind: 'gatt' };
 }

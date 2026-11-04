@@ -418,6 +418,14 @@ export interface ScaleAdapterCore {
   advertisesPendingReading?(device: BleDeviceInfo): boolean | undefined;
 
   /**
+   * Whether this advertisement is worth a GATT connect. Consulted only where an
+   * advertisement would otherwise lead straight to one; absent means always.
+   * Lets a scale that advertises before it has a weigh-in to send be left
+   * alone until it does. Must not throw and must not do I/O.
+   */
+  readyToConnect?(device: BleDeviceInfo): boolean;
+
+  /**
    * Receive per-device runtime config (e.g. a MiBeacon bind key) from the
    * composition root at startup and on config reload. Optional: only adapters
    * that decrypt a per-device secret implement it.

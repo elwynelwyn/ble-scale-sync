@@ -51,6 +51,7 @@ const HOOKS = [
   'isCompositionPending',
   'isStatusFrame',
   'advertisesPendingReading',
+  'readyToConnect',
   'dedupMark',
   'restoreDedupMark',
 ];
