@@ -421,7 +421,9 @@ export interface ScaleAdapterCore {
    * Whether this advertisement is worth a GATT connect. Consulted only where an
    * advertisement would otherwise lead straight to one; absent means always.
    * Lets a scale that advertises before it has a weigh-in to send be left
-   * alone until it does. Must not throw and must not do I/O.
+   * alone until it does. False also means the advertisement shows nobody on
+   * the scale, which the mqtt-proxy watcher records as a step-off
+   * (`RawReading.steppedOffAt`). Must not throw and must not do I/O.
    */
   readyToConnect?(device: BleDeviceInfo): boolean;
 

@@ -10,6 +10,7 @@ import { uuid16, xorChecksum, WEIGHT_ONLY_HOLD_MS } from '../../src/scales/body-
 import { hex, type Trace } from '../helpers/replay/trace.js';
 import { replaySession } from '../helpers/replay/session.js';
 import { session as t9146 } from '../fixtures/onebyone/t9146.js';
+import { bleLog } from '../../src/ble/types.js';
 
 // ─── OneByoneAdapter ─────────────────────────────────────────────────────────
 
@@ -175,7 +176,12 @@ describe('OneByoneAdapter', () => {
       const adapter = makeAdapter();
       const month13 = Buffer.from(RECORD);
       month13[13] = 13;
+      const debug = vi.spyOn(bleLog, 'debug').mockImplementation(() => {});
       expect(adapter.parseNotification(month13)).toBeNull();
+      expect(debug).toHaveBeenCalledWith(
+        '1byone: dropping a stored record with an implausible date [07ea0d04100726]',
+      );
+      debug.mockRestore();
     });
 
     it('drops a frame with a bad checksum', () => {
