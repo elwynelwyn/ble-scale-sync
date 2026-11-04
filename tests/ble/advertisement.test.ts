@@ -131,6 +131,15 @@ describe('evaluateAdvertisement', () => {
     expect(evaluateAdvertisement(adapter, info)).toEqual({ kind: 'gatt' });
   });
 
+  it('returns wait instead of gatt while readyToConnect declines the advertisement', () => {
+    const ready = { now: false };
+    const adapter = baseAdapter({ charNotifyUuid: 'fff4', readyToConnect: () => ready.now });
+    const info: BleDeviceInfo = { localName: 'x', serviceUuids: [] };
+    expect(evaluateAdvertisement(adapter, info)).toEqual({ kind: 'wait' });
+    ready.now = true;
+    expect(evaluateAdvertisement(adapter, info)).toEqual({ kind: 'gatt' });
+  });
+
   it('returns none when no reading, no broadcast source, and no notify char', () => {
     const adapter = baseAdapter({ charNotifyUuid: '' });
     const info: BleDeviceInfo = { localName: 'x', serviceUuids: [] };

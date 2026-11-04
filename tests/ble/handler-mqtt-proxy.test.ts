@@ -3559,6 +3559,94 @@ describe('handler-mqtt-proxy', () => {
   });
 
   /**
+   * A T9146 wakes advertising an all-zero frame region, then a weight-0 frame,
+   * and shows the weight only once somebody is on it. A connect on the first
+   * advert pauses the ESP32's scan before it ever sees a weight.
+   */
+  describe('T9146 connects only on an advert showing a weight', () => {
+    const MAC = 'AA:BB:CC:DD:EE:FF';
+    const settle = () => new Promise((r) => setTimeout(r, 20));
+
+    /** T9146 manufacturer data: MAC tail, 11-byte frame region, battery, model. */
+    function t9146Advert(frame: string, name = '') {
+      return {
+        address: MAC,
+        name,
+        rssi: -60,
+        services: [],
+        manufacturer_id: 0xbbaa,
+        manufacturer_data: `ccddeeff${frame}649146`,
+      };
+    }
+    /** A measuring 0xCF frame for `centikg`, checksum filled in. */
+    function frame(centikg: number): string {
+      const buf = Buffer.alloc(11);
+      buf[0] = 0xcf;
+      buf.writeUInt16LE(centikg, 3);
+      buf[9] = 0x01;
+      let x = 0;
+      for (let i = 0; i < 10; i++) x ^= buf[i];
+      buf[10] = x;
+      return buf.toString('hex');
+    }
+    const ALL_ZERO = '00'.repeat(11);
+
+    const connects = () =>
+      (mockClient.publishAsync as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c: unknown[]) => c[0] === `${PREFIX}/connect`,
+      ).length;
+
+    async function startForced(): Promise<InstanceType<typeof ReadingWatcher>> {
+      const watcher = new ReadingWatcher(
+        { ...MQTT_PROXY_CONFIG, auto_connect: false },
+        applyForcedAdapter(realAdapters, '1byone (Eufy)'),
+        MAC,
+        PROFILE,
+      );
+      await watcher.start();
+      const origPublish = mockClient.publishAsync;
+      mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
+        if (topic === `${PREFIX}/connect`) {
+          queueMicrotask(() => mockClient._simulateMessage(`${PREFIX}/error`, 'connect failed'));
+        }
+        return origPublish(topic, payload);
+      });
+      return watcher;
+    }
+
+    const scan = (...entries: Array<ReturnType<typeof t9146Advert>>) =>
+      mockClient._simulateMessage(`${PREFIX}/scan/results`, JSON.stringify(entries));
+
+    it('ignores the all-zero and weight-0 wake adverts, then connects on the weight', async () => {
+      vi.spyOn(bleLog, 'warn').mockImplementation(() => {});
+      const watcher = await startForced();
+
+      scan(t9146Advert(ALL_ZERO));
+      scan(t9146Advert(frame(0), 'eufy T9146'));
+      await settle();
+      expect(connects()).toBe(0);
+
+      scan(t9146Advert(frame(7240)));
+      await settle();
+      expect(connects()).toBe(1);
+      await watcher.stop();
+    });
+
+    it('still connects on an advert from the scale without manufacturer data', async () => {
+      vi.spyOn(bleLog, 'warn').mockImplementation(() => {});
+      const watcher = await startForced();
+
+      mockClient._simulateMessage(
+        `${PREFIX}/scan/results`,
+        JSON.stringify([{ address: MAC, name: 'eufy T9146', rssi: -60, services: [] }]),
+      );
+      await settle();
+      expect(connects()).toBe(1);
+      await watcher.stop();
+    });
+  });
+
+  /**
    * #466: after a reading the ESP32 resumes scanning and connects to the scale
    * again by itself while it is still on (firmware auto-connect), and the host
    * path connects again on the next scan batch. Nobody steps on, the scale

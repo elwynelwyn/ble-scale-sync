@@ -56,6 +56,20 @@ function recordTime(data: Buffer): Date | undefined {
 }
 
 /**
+ * The weight in kg of the first 0xCF frame in advertised manufacturer data,
+ * found by its checksum, or undefined when there is none or it is over the
+ * weight limit.
+ */
+function advertisedWeight(data: Buffer): number | undefined {
+  for (let i = 0; i + 11 <= data.length; i++) {
+    if (data[i] !== 0xcf || xorChecksum(data, i, i + 10) !== data[i + 10]) continue;
+    if (data[i + 9] === STATUS_OVERWEIGHT) return undefined;
+    return data.readUInt16LE(i + 3) / 100;
+  }
+  return undefined;
+}
+
+/**
  * Adapter for Eufy C1/P1/A1 (T9146/T9147/T9120) and "Health Scale" branded
  * 1byone devices.
  *
@@ -112,6 +126,17 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
     // driven with the wrong 1byone protocol (it falls through to its own
     // adapter via the notify-char fallback instead).
     return chars.includes(uuid16(0xfff4)) && !chars.includes(uuid16(0xfff2));
+  }
+
+  /**
+   * The scale wakes advertising an all-zero or weight-0 frame, so connect only
+   * once an advertised frame shows a weight. An advertisement without
+   * manufacturer data at all (some bridges strip it) still connects.
+   */
+  readyToConnect(device: BleDeviceInfo): boolean {
+    const data = device.manufacturerData?.data;
+    if (!data || data.length === 0) return true;
+    return (advertisedWeight(data) ?? 0) > 0;
   }
 
   /** Clock sync, then the request for stored records, paced like the app. */

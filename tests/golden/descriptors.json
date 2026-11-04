@@ -921,7 +921,8 @@
     "hooks": [
       "onConnected",
       "onSessionEnd",
-      "isFinal"
+      "isFinal",
+      "readyToConnect"
     ]
   },
   {

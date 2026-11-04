@@ -220,6 +220,48 @@ describe('OneByoneAdapter', () => {
     });
   });
 
+  describe('readyToConnect()', () => {
+    const WEIGHING = withChecksum(MEASURING, (b) => b.writeUInt16LE(7240, 3)); // 72.40 kg
+
+    /** Manufacturer data as a T9146 advertises it: MAC tail, 0xCF frame region, battery, model. */
+    function advert(frame: Buffer) {
+      return mockPeripheral('', [], {
+        id: 0xbbaa,
+        data: Buffer.concat([hex('ccddeeff'), frame, hex('649146')]),
+      });
+    }
+
+    it('connects once the advertised frame shows a weight', () => {
+      expect(makeAdapter().readyToConnect(advert(WEIGHING))).toBe(true);
+    });
+
+    it('waits on the all-zero frame region the scale wakes with', () => {
+      expect(makeAdapter().readyToConnect(advert(Buffer.alloc(11)))).toBe(false);
+    });
+
+    it('waits on a valid frame with weight 0', () => {
+      const empty = withChecksum(MEASURING, (b) => b.writeUInt16LE(0, 3));
+      expect(makeAdapter().readyToConnect(advert(empty))).toBe(false);
+    });
+
+    it('waits on a frame with a bad checksum', () => {
+      const bad = Buffer.from(WEIGHING);
+      bad[10] ^= 0xff;
+      expect(makeAdapter().readyToConnect(advert(bad))).toBe(false);
+    });
+
+    it('waits on a frame over the weight limit (status 0x02)', () => {
+      const over = withChecksum(WEIGHING, (b) => (b[9] = 0x02));
+      expect(makeAdapter().readyToConnect(advert(over))).toBe(false);
+    });
+
+    it('connects on an advertisement without manufacturer data', () => {
+      expect(makeAdapter().readyToConnect(mockPeripheral('eufy T9146', [uuid16(0xfff0)]))).toBe(
+        true,
+      );
+    });
+  });
+
   describe('captured T9146 weigh-in through waitForRawReading', () => {
     const trace = t9146.traces['t9146-weigh-in'];
     const FINAL_AT_MS = trace.steps.at(-1)!.atMs;
