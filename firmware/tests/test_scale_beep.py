@@ -242,6 +242,52 @@ class TestResultTimer(unittest.TestCase):
             self.assertFalse(self.timer.expired((start + 14999) & _TICKS_MAX))
             self.assertTrue(self.timer.expired((start + 15000) & _TICKS_MAX))
 
+    def test_busy_across_the_timeout_does_not_expire(self):
+        self.timer.start(0)
+        self.assertFalse(self.timer.expired(15000, busy=True))
+        self.assertFalse(self.timer.expired(30000, busy=True))
+
+    def test_expires_after_session_grace(self):
+        self.timer.start(0)
+        self.assertFalse(self.timer.expired(20000, busy=True))
+        self.assertFalse(self.timer.expired(22999, session_end=20000))
+        self.assertTrue(self.timer.expired(23000, session_end=20000))
+
+    def test_cancel_within_session_grace(self):
+        self.timer.start(0)
+        self.assertFalse(self.timer.expired(21000, session_end=20000))
+        self.timer.cancel()
+        self.assertFalse(self.timer.expired(40000, session_end=20000))
+
+    def test_early_session_end_keeps_base_timeout(self):
+        self.timer.start(0)
+        self.assertFalse(self.timer.expired(14999, session_end=5000))
+        self.assertTrue(self.timer.expired(15000, session_end=5000))
+
+    def test_session_end_before_start_is_ignored(self):
+        self.timer.start(10000)
+        self.assertTrue(self.timer.expired(25000, session_end=9000))
+
+    def test_wedged_busy_expires_at_hard_cap(self):
+        self.timer.start(0)
+        self.assertFalse(self.timer.expired(44999, busy=True))
+        self.assertTrue(self.timer.expired(45000, busy=True))
+
+    def test_session_grace_survives_tick_wrap(self):
+        start = _TICKS_MAX - 10000
+        end = (start + 20000) & _TICKS_MAX
+        with mock.patch.object(ble_bridge, "_ticks_diff", _wrapping_ticks_diff):
+            self.timer.start(start)
+            self.assertFalse(self.timer.expired((start + 16000) & _TICKS_MAX, busy=True))
+            self.assertFalse(self.timer.expired((start + 22999) & _TICKS_MAX, session_end=end))
+            self.assertTrue(self.timer.expired((start + 23000) & _TICKS_MAX, session_end=end))
+
+    def test_hard_cap_survives_tick_wrap(self):
+        start = _TICKS_MAX - 10000
+        with mock.patch.object(ble_bridge, "_ticks_diff", _wrapping_ticks_diff):
+            self.timer.start(start)
+            self.assertTrue(self.timer.expired((start + 45000) & _TICKS_MAX, busy=True))
+
     def test_elapsed_is_none_when_idle(self):
         self.assertIsNone(self.timer.elapsed(5000))
 

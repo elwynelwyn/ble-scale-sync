@@ -200,7 +200,7 @@ Boards with a speaker play these sounds during a weigh-in:
 - **One beep** when a scale the server has told it about reports a non-zero weight, once per weigh-in. Tested with the Eufy T9146/T9147/T9120 and 1byone-style scales that broadcast the weight in their advertisement. Other scales don't trigger it.
 - **Two beeps** from the server when the reading is matched to a user. This includes a reading that arrives from the scale's memory within 2 minutes of being taken.
 - **Three low beeps** from the server when the weight matches nobody, or is out of range with `out_of_range: skip`.
-- **Two long low beeps** from the ESP32 when no result arrives within 15 s of the start beep, for example because the scale never connected or the server is down.
+- **Two long low beeps** from the ESP32 when no result arrives within 15 s of the start beep, or 3 s after the scale connection ends if it is still being read (45 s at most), for example because the scale never connected or the server is down.
 
 The server sends the two result sounds in multi-user mode only. With a single user configured it sends no result beep, so the two long low beeps play after each weigh-in.
 

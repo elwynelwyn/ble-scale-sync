@@ -38,6 +38,10 @@ SCALE_REARM_MS = 30000
 # is reported with PROBLEM_BEEP (freq Hz, duration ms, repeat).
 RESULT_TIMEOUT_MS = 15000
 PROBLEM_BEEP = (400, 500, 2)
+# The result beep may also come this long after a scale connection ends,
+# and the problem sound plays at the latest this long after the start beep.
+RESULT_AFTER_SESSION_MS = 3000
+RESULT_HARD_CAP_MS = 45000
 
 try:
     from time import ticks_diff as _ticks_diff
@@ -344,10 +348,27 @@ class ResultTimer:
             return None
         return _ticks_diff(now, self.started)
 
-    def expired(self, now):
-        """True once when the timeout has passed since start(), then idle."""
-        if self.started is None or _ticks_diff(now, self.started) < RESULT_TIMEOUT_MS:
+    def expired(self, now, busy=False, session_end=None):
+        """True once when the result is overdue, then idle.
+
+        Overdue at RESULT_TIMEOUT_MS after start(), or RESULT_AFTER_SESSION_MS
+        after a scale connection that ended after start(), whichever is later.
+        Never while `busy` (connecting to the scale or holding a session with
+        it: the server cannot have answered yet), except at RESULT_HARD_CAP_MS.
+        """
+        if self.started is None:
             return False
+        elapsed = _ticks_diff(now, self.started)
+        if elapsed < RESULT_HARD_CAP_MS:
+            if busy:
+                return False
+            deadline = RESULT_TIMEOUT_MS
+            if session_end is not None:
+                ended = _ticks_diff(session_end, self.started)
+                if ended >= 0:
+                    deadline = max(deadline, ended + RESULT_AFTER_SESSION_MS)
+            if elapsed < deadline:
+                return False
         self.started = None
         return True
 

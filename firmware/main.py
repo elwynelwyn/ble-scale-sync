@@ -135,6 +135,9 @@ _scale_macs = set()
 _beep_gate = ScaleBeepGate()
 # Runs from the start beep until the server's result beep arrives.
 _result_timer = ResultTimer()
+# ticks_ms when the last scale connection (attempt or session) ended after the
+# current start beep, or None.
+_last_session_end = None
 
 # Autonomous GATT connect: ESP32 connects itself when a known scale MAC
 # appears in a scan, eliminating the MQTT round-trip latency (#201).
@@ -371,10 +374,11 @@ async def _wait_not_busy(max_iters=60, sleep_ms=500):
 def _check_scale_beep(results):
     """Beep/display once per weigh-in, when a known scale reports a non-zero weight.
 
-    Wrap-safe: the gate clears `last_seen` at its 30 s re-arm and the timer clears
-    `started` on expiry, so no mark lives long enough to reach the ~6.2 day
-    ticks_diff limit.
+    Wrap-safe: the gate clears `last_seen` at its 30 s re-arm, the timer clears
+    `started` on expiry and a start beep clears `_last_session_end`, so no mark
+    lives long enough to reach the ~6.2 day ticks_diff limit.
     """
+    global _last_session_end
     now = time.ticks_ms()
     hit = _beep_gate.update(results, _scale_macs, now)
     if hit:
@@ -383,6 +387,7 @@ def _check_scale_beep(results):
         if board.HAS_BEEP:
             beep()
             _result_timer.start(now)
+            _last_session_end = None
         if board.HAS_DISPLAY:
             ui.on_scale_detected(mac)
 
@@ -391,7 +396,8 @@ def _check_result_timeout():
     """Play the problem sound when a weigh-in got no result beep in time."""
     now = time.ticks_ms()
     elapsed = _result_timer.elapsed(now)
-    if _result_timer.expired(now):
+    busy = _scan_paused or _host_connect_pending
+    if _result_timer.expired(now, busy, _last_session_end):
         print("Result cue expired after %d ms, playing problem sound" % elapsed)
         beep(*PROBLEM_BEEP)
 
@@ -497,11 +503,12 @@ def _resume_scanning():
     the scan loops believing a session is live, so these always move together
     (#296).
     """
-    global _scan_paused, _gatt_session_armed, _host_engaged
+    global _scan_paused, _gatt_session_armed, _host_engaged, _last_session_end
     _scan_paused = False
     _gatt_session_armed = False
     _host_engaged = False
     _beep_gate.last_seen = time.ticks_ms()
+    _last_session_end = _beep_gate.last_seen
     if board.CONTINUOUS_SCAN:
         bridge.start_streaming()
 

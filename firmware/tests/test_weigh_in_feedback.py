@@ -171,12 +171,62 @@ class WeighInFeedbackTest(unittest.TestCase):
         with self.assertRaises(_Stop):
             asyncio.run(self.main._result_watchdog())
 
-    def test_watchdog_plays_problem_sound_while_scanning_is_paused(self):
+    def test_watchdog_plays_problem_sound_for_a_wedged_session_at_the_hard_cap(self):
+        self._scan(7550)
         self.main._scan_paused = True
         self.main._busy = True
+        self.beeps.clear()
+        self._run_watchdog(89)
+        self.assertEqual(self.beeps, [])
+        self._run_watchdog(2)
+        self.assertEqual(self.beeps, [(400, 500, 2)])
+
+    def test_connect_past_the_timeout_is_not_a_problem(self):
         self._scan(7550)
         self.beeps.clear()
-        self._run_watchdog(90)
+        self.now += 1_000
+        self.main._host_connect_pending = True
+        self.now += 2_000
+        self.main._host_connect_pending = False
+        self.main._scan_paused = True
+        self.now += 17_000
+        self.main._check_result_timeout()
+        self.assertEqual(self.beeps, [])
+
+    def test_cue_right_after_the_session_cancels(self):
+        self._scan(7550)
+        self.beeps.clear()
+        self.main._scan_paused = True
+        self.now += 20_000
+        self.main._check_result_timeout()
+        self.main._resume_scanning()
+        self.now += 1_000
+        self.main._check_result_timeout()
+        self.main.on_message(_BEEP_TOPIC, b'{"freq": 1200, "duration": 200, "repeat": 2}', False)
+        self.now += 60_000
+        self.main._check_result_timeout()
+        self.assertEqual(self.beeps, [])
+
+    def test_no_cue_after_the_session_plays_problem_sound_3s_later(self):
+        self._scan(7550)
+        self.beeps.clear()
+        self.main._scan_paused = True
+        self.now += 20_000
+        self.main._resume_scanning()
+        self.now += 2_999
+        self.main._check_result_timeout()
+        self.assertEqual(self.beeps, [])
+        self.now += 1
+        self.main._check_result_timeout()
+        self.assertEqual(self.beeps, [(400, 500, 2)])
+
+    def test_session_before_the_start_beep_does_not_extend_it(self):
+        self.main._resume_scanning()
+        self.now += 5_000
+        self._scan(7550)
+        self.beeps.clear()
+        self.now += 15_000
+        self.main._check_result_timeout()
         self.assertEqual(self.beeps, [(400, 500, 2)])
 
     def test_watchdog_survives_a_failing_beep(self):
