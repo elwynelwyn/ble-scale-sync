@@ -1457,6 +1457,58 @@ describe('processReading: a live weigh-in sent again by a scale still on', () =>
     expect(display.beep).not.toHaveBeenCalled();
   });
 
+  it('exports and cues the same weight 5 s later when the scale showed weight 0 in between', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    await processReading(ctx, live(85), opts);
+    vi.mocked(dispatchExports).mockClear();
+    display.beep.mockClear();
+    vi.setSystemTime(NOW.getTime() + 5_000);
+
+    await processReading(ctx, { ...live(85), steppedOffAt: new Date(NOW.getTime() + 2_000) }, opts);
+
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+  });
+
+  it('still skips it when the weight 0 was seen before the saved weigh-in', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    await processReading(ctx, live(85), opts);
+    vi.mocked(dispatchExports).mockClear();
+    vi.setSystemTime(NOW.getTime() + 5_000);
+
+    await processReading(
+      ctx,
+      { ...live(85), steppedOffAt: new Date(NOW.getTime() - 10_000) },
+      opts,
+    );
+
+    expect(dispatchExports).not.toHaveBeenCalled();
+  });
+
+  it('still skips a replayed stored copy after a step-off, as a replay', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    await processReading(ctx, live(85), opts);
+    vi.mocked(dispatchExports).mockClear();
+    display.beep.mockClear();
+    vi.setSystemTime(NOW.getTime() + 5_000);
+
+    await processReading(
+      ctx,
+      {
+        reading: { weight: 85, impedance: 480, timestamp: NOW, fromMemory: true },
+        adapter: fakeAdapter(),
+        steppedOffAt: new Date(NOW.getTime() + 2_000),
+      },
+      opts,
+    );
+
+    expect(dispatchExports).not.toHaveBeenCalled();
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
   it('skips the repeat in single-user mode too', async () => {
     const ctx = makeCtx([dad]);
     await processReading(ctx, live(85), { singleUserExporters: [fakeExporter('file')] });
