@@ -203,7 +203,12 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
 
     if (data.length >= 18) {
       const timestamp = recordTime(data);
-      if (!timestamp) return null;
+      if (!timestamp) {
+        bleLog.debug(
+          `1byone: dropping a stored record with an implausible date [${data.subarray(11, 18).toString('hex')}]`,
+        );
+        return null;
+      }
       this.s.frameSettled = true;
       return { weight, impedance, timestamp, fromMemory: true };
     }
