@@ -89,6 +89,8 @@ const WRITE = '0000fff100001000800000805f9b34fb';
 const START = new Date(2026, 2, 10, 7, 30, 0);
 const TICK_MS = 500;
 const RESULT_TIMEOUT_MS = 15_000;
+const RESULT_AFTER_SESSION_MS = 3_000;
+const RESULT_HARD_CAP_MS = 45_000;
 const SCALE_REARM_MS = 30_000;
 /** How long the scale stays awake advertising weight 0 after a step-off. */
 const AWAKE_AFTER_MS = 20_000;
@@ -331,8 +333,10 @@ class FakeEsp32 {
   readonly gate = new BeepGate();
   scale!: FakeScale;
   private scanning = true;
+  private connecting = false;
   private session = false;
   private resultStarted: number | null = null;
+  private lastSessionEnd: number | null = null;
   private readonly t0 = Date.now();
   /** Delay before each connect command is answered; `fail` publishes an error instead. */
   connectPlan: Array<{ delayMs: number; fail?: boolean }> = [];
@@ -345,7 +349,7 @@ class FakeEsp32 {
 
   private tick(): void {
     const now = this.elapsed();
-    if (this.resultStarted !== null && now - this.resultStarted >= RESULT_TIMEOUT_MS) {
+    if (this.resultOverdue(now)) {
       this.resultStarted = null;
       this.problemBeeps.push(now);
     }
@@ -360,6 +364,7 @@ class FakeEsp32 {
     if (this.gate.update(data, now)) {
       this.startBeeps.push(now);
       this.resultStarted = now;
+      this.lastSessionEnd = null;
     }
     const entry = {
       address: MAC,
@@ -373,6 +378,22 @@ class FakeEsp32 {
     client.deliver(`${PREFIX}/scan/results`, JSON.stringify([entry]));
   }
 
+  /** firmware ResultTimer.expired: held while connecting or in session, 3 s grace after, 45 s cap. */
+  private resultOverdue(now: number): boolean {
+    if (this.resultStarted === null) return false;
+    const elapsed = now - this.resultStarted;
+    if (elapsed >= RESULT_HARD_CAP_MS) return true;
+    if (this.connecting || this.session) return false;
+    let deadline = RESULT_TIMEOUT_MS;
+    if (this.lastSessionEnd !== null && this.lastSessionEnd >= this.resultStarted) {
+      deadline = Math.max(
+        deadline,
+        this.lastSessionEnd - this.resultStarted + RESULT_AFTER_SESSION_MS,
+      );
+    }
+    return elapsed >= deadline;
+  }
+
   onPublish = (topic: string, payload: Buffer): void => {
     const now = this.elapsed();
     if (topic === `${PREFIX}/beep`) {
@@ -383,8 +404,10 @@ class FakeEsp32 {
     } else if (topic === `${PREFIX}/connect`) {
       this.connects.push(now);
       this.scanning = false;
+      this.connecting = true;
       const plan = this.connectPlan.shift() ?? { delayMs: 2_500 };
       setTimeout(() => {
+        this.connecting = false;
         if (plan.fail) {
           client.deliver(
             `${PREFIX}/error`,
@@ -432,6 +455,7 @@ class FakeEsp32 {
 
   private resume(): void {
     this.gate.lastSeen = this.elapsed();
+    this.lastSessionEnd = this.gate.lastSeen;
     setTimeout(() => (this.scanning = true), RESUME_SCAN_MS);
   }
 }
@@ -565,8 +589,9 @@ const run = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 
 /**
  * The invariant from the person's side: each weigh-in gets one start beep from
- * the ESP32 and then exactly one result cue from the server within 15 s of it,
- * before the next start beep; and the ESP32 never has to play its problem sound.
+ * the ESP32 and then exactly one result cue from the server before the next
+ * start beep, in time for the firmware's result timer, so the ESP32 never has
+ * to play its problem sound.
  */
 function expectOneCuePerWeighIn(count: number): void {
   expect(esp.problemBeeps).toEqual([]);
@@ -575,7 +600,7 @@ function expectOneCuePerWeighIn(count: number): void {
   esp.startBeeps.forEach((start, i) => {
     const cue = esp.serverCues[i].at;
     expect(cue).toBeGreaterThan(start);
-    expect(cue - start).toBeLessThanOrEqual(RESULT_TIMEOUT_MS);
+    expect(cue - start).toBeLessThan(RESULT_HARD_CAP_MS);
     if (i + 1 < esp.startBeeps.length) expect(cue).toBeLessThan(esp.startBeeps[i + 1]);
   });
 }
@@ -765,6 +790,65 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
       { slug: 'alex', kg: 82.4, historical: true },
       { slug: 'sam', kg: 58.2, historical: false },
     ]);
+    await server.stop();
+  });
+
+  // The firmware's connect retry worst cases: a hung attempt, then a healthy one.
+  describe.each([13_000, 19_000])('6c. connect takes %i ms', (delayMs) => {
+    it('person still on when it connects: the weigh-in arrives live, one cue, no problem sound', async () => {
+      const off = ALEX_WEIGH_IN.on + delayMs + 2_000;
+      const stillOn: WeighIn = { ...ALEX_WEIGH_IN, off, final: off + 4_000 };
+      setUp([stillOn]);
+      esp.connectPlan = [{ delayMs }];
+      const exports: Exported[] = [];
+      const server = await startServer(exports);
+
+      await run(stillOn.final + 10_000);
+
+      expect(esp.connects).toEqual([ALEX_WEIGH_IN.on]);
+      expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
+      expect(esp.serverCues[0].at - esp.startBeeps[0]).toBeGreaterThan(RESULT_TIMEOUT_MS);
+      expectOneCuePerWeighIn(1);
+      await server.stop();
+    });
+
+    it('person already off: the weigh-in arrives stored-only, one cue, no problem sound', async () => {
+      setUp([ALEX_WEIGH_IN]);
+      esp.connectPlan = [{ delayMs }];
+      const exports: Exported[] = [];
+      const server = await startServer(exports);
+
+      await run(ALEX_WEIGH_IN.on + delayMs + 15_000);
+
+      expect(esp.connects).toEqual([ALEX_WEIGH_IN.on]);
+      expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: true }]);
+      expect(esp.serverCues[0].at - esp.startBeeps[0]).toBeGreaterThan(RESULT_TIMEOUT_MS);
+      expectOneCuePerWeighIn(1);
+      await server.stop();
+    });
+  });
+
+  it('10. steps off and back on within 60 s at the same weight: a second weigh-in', async () => {
+    const again: WeighIn = {
+      ...ALEX_WEIGH_IN,
+      on: 30_000,
+      settle: 33_000,
+      off: 35_000,
+      final: 39_000,
+    };
+    setUp([ALEX_WEIGH_IN, again]);
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
+
+    await run(45_000);
+
+    expect(esp.connects).toEqual([ALEX_WEIGH_IN.on, again.on]);
+    expect(esp.serverCues.map((c) => c.repeat)).toEqual([2, 2]);
+    expect(exports).toEqual([
+      { slug: 'alex', kg: 82.4, historical: false },
+      { slug: 'alex', kg: 82.4, historical: false },
+    ]);
+    expectOneCuePerWeighIn(2);
     await server.stop();
   });
 
