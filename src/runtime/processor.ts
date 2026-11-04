@@ -229,31 +229,12 @@ interface Assigned {
   user: UserConfig;
   /** Drift warning for the live frame (multi-user only). */
   drift?: string;
-  /**
-   * The stored record that gets the saved cue: played once it passes the
-   * replay dedup, before the exporters run, so a slow one cannot delay it.
-   */
-  cue?: boolean;
 }
 
-/**
- * Compute, log and export one frame for its user.
- *
- * `exported` is true only for a dispatch at least one exporter accepted; a dry
- * run, a dedup skip and a total failure all leave it false, so the caller
- * anchors `last_known_weight` only on a weight that actually went out.
- */
-async function exportFrame(
-  ctx: AppContext,
-  raw: RawReading,
-  item: Assigned,
-  exporters: Exporter[] | undefined,
-  prefix: string,
-): Promise<{ dispatched: boolean; success: boolean; exported: boolean }> {
+/** Why a frame is skipped as a replay of a weigh-in already exported, or undefined. */
+function replayReason(ctx: AppContext, item: Assigned): string | undefined {
   const { frame, user } = item;
   const { reading } = frame;
-  const tag = frameTag(prefix, frame);
-  const tagPrefix = tag ? `${tag} ` : '';
 
   // Replay dedup: skip a stored record whose weight matches a weight already
   // exported for this user (likely a re-export of an already-synced weigh-in).
@@ -292,14 +273,37 @@ async function exportFrame(
         `the last exported weigh-in measured at ${anchorAt.toISOString()}`
       : 'no measurement time is saved for that weight yet (last_known_weight from the ' +
         'config), so a newer weigh-in cannot be told apart from a replay';
+    return `matches ${what} within +/-${DEDUP_KG_TOLERANCE} kg and ${why}`;
+  }
+  return undefined;
+}
+
+/**
+ * Compute, log and export one frame for its user.
+ *
+ * `exported` is true only for a dispatch at least one exporter accepted; a dry
+ * run, a dedup skip and a total failure all leave it false, so the caller
+ * anchors `last_known_weight` only on a weight that actually went out.
+ */
+async function exportFrame(
+  ctx: AppContext,
+  raw: RawReading,
+  item: Assigned,
+  exporters: Exporter[] | undefined,
+  prefix: string,
+): Promise<{ dispatched: boolean; success: boolean; exported: boolean }> {
+  const { frame, user } = item;
+  const { reading } = frame;
+  const tag = frameTag(prefix, frame);
+  const tagPrefix = tag ? `${tag} ` : '';
+
+  const replay = replayReason(ctx, item);
+  if (replay) {
     log.info(
-      `${tagPrefix}Skipping replay: weight ${fmtWeight(reading.weight, ctx.weightUnit)} ` +
-        `matches ${what} within +/-${DEDUP_KG_TOLERANCE} kg and ${why}`,
+      `${tagPrefix}Skipping replay: weight ${fmtWeight(reading.weight, ctx.weightUnit)} ${replay}`,
     );
     return { dispatched: false, success: true, exported: false };
   }
-
-  if (item.cue) ctx.display?.beep(1200, 200, 2);
 
   const profile = resolveUserProfile(user, ctx.config.scale);
   const payload = computeFrameMetrics(raw.adapter, reading, profile, tagPrefix);
@@ -655,6 +659,7 @@ async function processMultiUser(
   }
 
   const cueFrame = latestLive ? undefined : newestJustTaken(stored);
+  let cueItem: Assigned | undefined;
 
   for (const frame of stored) {
     const isCue = frame === cueFrame;
@@ -666,7 +671,8 @@ async function processMultiUser(
     if (skipOutOfRange(ctx, user, frame.reading.weight, frameTag(`[${user.name}]`, frame), isCue)) {
       continue;
     }
-    items.push({ frame, user, ...(isCue ? { cue: true } : {}) });
+    items.push({ frame, user });
+    if (isCue) cueItem = items[items.length - 1];
   }
 
   if (latestLive) {
@@ -700,6 +706,11 @@ async function processMultiUser(
   }
 
   if (items.length === 0) return true;
+
+  // Before any exporter runs, so a slow one on an earlier record cannot delay
+  // it. The decision stays the export's: only live exports move the anchor,
+  // and a cycle with a cue frame has no live frame.
+  if (cueItem && !replayReason(ctx, cueItem)) ctx.display?.beep(1200, 200, 2);
 
   // Once per cycle that has something to export, independent of replay dedup:
   // inside the per-frame loop it would be skipped whenever the newest reading
