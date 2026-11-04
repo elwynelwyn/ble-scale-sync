@@ -92,8 +92,12 @@ const RESULT_TIMEOUT_MS = 15_000;
 const SCALE_REARM_MS = 30_000;
 /** How long the scale stays awake advertising weight 0 after a step-off. */
 const AWAKE_AFTER_MS = 20_000;
-/** The scale ends a session with nothing left to stream this long after its history dump. */
-const IDLE_DISCONNECT_MS = 3_000;
+/**
+ * With nothing live to stream, the scale sends `f3 00` and drops the link this
+ * long after its history dump, unless the server ends the session first. ~30 s
+ * in the production logs; ~6 s once (a replay right after a weigh-in).
+ */
+const SCALE_HOLD_MS = 30_000;
 /** From the end of a GATT session to the next scan batch; the server reconnects ~1.5 s after a save. */
 const RESUME_SCAN_MS = 1_000;
 
@@ -177,17 +181,24 @@ function recordFrame(r: StoredRecord): Buffer {
 const ALL_ZERO = Buffer.alloc(11);
 const at = (ms: number): Date => new Date(START.getTime() + ms);
 
+interface ScaleOptions {
+  /** Extra wake-ups with nobody on the scale: [from, to). */
+  idleWakes?: Array<[number, number]>;
+  holdMs?: number;
+  /** On a reconnect while the person is still on, stream the finished weigh-in live again. */
+  resendLive?: boolean;
+}
+
 class FakeScale {
   memory: StoredRecord[] = [];
   private dumped: StoredRecord[] = [];
-  private finalSent = new Set<WeighIn>();
+  private sentThisSession = new Set<WeighIn>();
   private stream: ReturnType<typeof setInterval> | null = null;
   private idle: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     readonly weighIns: WeighIn[],
-    /** Extra wake-ups with nobody on the scale: [from, to). */
-    readonly idleWakes: Array<[number, number]> = [],
+    readonly opts: ScaleOptions,
     readonly elapsed: () => number,
     readonly notify: (data: Buffer) => void,
     readonly disconnect: () => void,
@@ -205,7 +216,7 @@ class FakeScale {
       }
       if (t >= w.on - 1000 && t < w.on) return t < w.on - 500 ? ALL_ZERO : frame(0, 0, 0, 0x01);
     }
-    for (const [from, to] of this.idleWakes) {
+    for (const [from, to] of this.opts.idleWakes ?? []) {
       if (t >= from && t < to) return t < from + 500 ? ALL_ZERO : frame(0, 0, 0, 0x01);
     }
     for (const w of this.weighIns) {
@@ -215,16 +226,22 @@ class FakeScale {
   }
 
   private inProgress(t: number): WeighIn | undefined {
-    return this.weighIns.find((w) => t >= w.on && !this.finalSent.has(w) && t < w.final + TICK_MS);
+    return this.weighIns.find(
+      (w) =>
+        t >= w.on &&
+        !this.sentThisSession.has(w) &&
+        (t < w.final + TICK_MS || (this.opts.resendLive === true && t < w.off)),
+    );
   }
 
   onSubscribe(): void {
+    this.sentThisSession.clear();
     this.stream = setInterval(() => {
       const t = this.elapsed();
       const w = this.inProgress(t);
       if (!w) return;
       if (t >= w.final) {
-        this.finalSent.add(w);
+        this.sentThisSession.add(w);
         this.notify(frame(w.kg, w.ohm, 1, 0x00));
       } else if (t >= w.settle) {
         this.notify(frame(w.kg, 0, 1, 0x01));
@@ -243,7 +260,7 @@ class FakeScale {
         this.idle = setTimeout(() => {
           this.notify(Buffer.from([0xf3, 0x00]));
           this.disconnect();
-        }, IDLE_DISCONNECT_MS);
+        }, this.opts.holdMs ?? SCALE_HOLD_MS);
       }
     }
     if (data[0] === 0xf2 && data[1] === 0x01) {
@@ -309,6 +326,8 @@ class FakeEsp32 {
   readonly problemBeeps: number[] = [];
   readonly serverCues: Cue[] = [];
   readonly connects: number[] = [];
+  /** Each GATT link, from `connected` to its end, and who ended it. */
+  readonly sessions: Array<{ start: number; end?: number; by?: 'server' | 'scale' }> = [];
   readonly gate = new BeepGate();
   scale!: FakeScale;
   private scanning = true;
@@ -375,6 +394,7 @@ class FakeEsp32 {
           return;
         }
         this.session = true;
+        this.sessions.push({ start: this.elapsed() });
         client.deliver(
           `${PREFIX}/connected`,
           JSON.stringify({
@@ -391,20 +411,21 @@ class FakeEsp32 {
     } else if (topic === `${PREFIX}/write/${WRITE}`) {
       if (this.session) this.scale.onWrite(payload);
     } else if (topic === `${PREFIX}/disconnect`) {
-      this.endSession();
+      this.endSession('server');
     }
   };
 
   /** The scale dropped the link. */
   scaleDisconnected = (): void => {
     if (!this.session) return;
-    this.endSession();
+    this.endSession('scale');
     client.deliver(`${PREFIX}/disconnected`, '');
   };
 
-  private endSession(): void {
+  private endSession(by: 'server' | 'scale'): void {
     if (!this.session) return;
     this.session = false;
+    Object.assign(this.sessions[this.sessions.length - 1], { end: this.elapsed(), by });
     this.scale.endSession();
     this.resume();
   }
@@ -513,12 +534,12 @@ async function startServer(exports: Exported[], opts: ServerOptions = {}) {
 
 let esp: FakeEsp32;
 
-function setUp(weighIns: WeighIn[], idleWakes: Array<[number, number]> = []): void {
+function setUp(weighIns: WeighIn[], opts: ScaleOptions = {}): void {
   esp = new FakeEsp32();
   client = createClient(esp.onPublish);
   esp.scale = new FakeScale(
     weighIns,
-    idleWakes,
+    opts,
     esp.elapsed,
     (data) => client.deliver(`${PREFIX}/notify/${NOTIFY}`, data),
     esp.scaleDisconnected,
@@ -612,8 +633,35 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     expect(esp.serverCues.map((c) => c.repeat)).toEqual([2]);
     expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
     expectOneCuePerWeighIn(1);
+    // The replay session, then empty-memory ones (production session B): the
+    // server ends each about 2 s after the end-of-history marker, not the
+    // scale 30 s later, and the ESP32 scans again.
+    const reconnects = esp.sessions.slice(1);
+    expect(reconnects.length).toBeGreaterThan(1);
+    for (const s of reconnects) {
+      expect(s.by).toBe('server');
+      expect(s.end! - s.start).toBeLessThan(4_000);
+    }
     await server.stop();
   });
+
+  // PostReadingWindow only changes how a reconnect without a weigh-in is
+  // logged; nothing dedups a live reading, so a scale that streamed the
+  // finished weigh-in live again would be exported and cued twice.
+  it.fails(
+    '3b. the person stays on and the scale streams the weigh-in live again: one cue',
+    async () => {
+      setUp([{ ...ALEX_WEIGH_IN, off: 40_000 }], { resendLive: true });
+      const exports: Exported[] = [];
+      const server = await startServer(exports);
+
+      await run(60_000);
+
+      expect(exports).toHaveLength(1);
+      expectOneCuePerWeighIn(1);
+      await server.stop();
+    },
+  );
 
   it('4. back-to-back: a second person after weight-0 adverts gets their own beeps and export', async () => {
     const sam: WeighIn = {
@@ -637,11 +685,14 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
       { slug: 'sam', kg: 58.2, historical: false },
     ]);
     expectOneCuePerWeighIn(2);
+    // Production session D: live frames come before the stored copy of the
+    // first weigh-in, so the session waits for the live reading.
+    expect(esp.sessions[1].end).toBeGreaterThanOrEqual(sam.final);
     await server.stop();
   });
 
   it('5. idle wake: only all-zero and weight-0 adverts for 60 s, nothing happens', async () => {
-    setUp([], [[500, 60_500]]);
+    setUp([], { idleWakes: [[500, 60_500]] });
     const exports: Exported[] = [];
     const server = await startServer(exports);
 
@@ -655,22 +706,27 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     await server.stop();
   });
 
-  it('6. hung first connect: the ESP32 retry connects after the weigh-in, cue from the stored record', async () => {
-    const quick: WeighIn = { ...ALEX_WEIGH_IN, settle: 3_500, off: 5_000, final: 8_500 };
-    setUp([quick]);
-    // One 6 s attempt hangs, the retry connects 2.5 s later.
-    esp.connectPlan = [{ delayMs: 8_500 }];
-    const exports: Exported[] = [];
-    const server = await startServer(exports);
+  // Production sessions A (30 s hold) and C (6 s hold).
+  it.each([30_000, 6_000])(
+    '6. hung first connect: the ESP32 retry connects after the weigh-in, cue from the stored record (scale holds %i ms)',
+    async (holdMs) => {
+      const quick: WeighIn = { ...ALEX_WEIGH_IN, settle: 3_500, off: 5_000, final: 8_500 };
+      setUp([quick], { holdMs });
+      // One 6 s attempt hangs, the retry connects 2.5 s later.
+      esp.connectPlan = [{ delayMs: 8_500 }];
+      const exports: Exported[] = [];
+      const server = await startServer(exports);
 
-    await run(20_000);
+      await run(20_000);
 
-    expect(esp.connects).toEqual([quick.on]);
-    expect(esp.serverCues.map((c) => c.repeat)).toEqual([2]);
-    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: true }]);
-    expectOneCuePerWeighIn(1);
-    await server.stop();
-  });
+      expect(esp.connects).toEqual([quick.on]);
+      expect(esp.serverCues.map((c) => c.repeat)).toEqual([2]);
+      expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: true }]);
+      expectOneCuePerWeighIn(1);
+      expect(esp.sessions[0].by).toBe('server');
+      await server.stop();
+    },
+  );
 
   it('6b. connect fails for good after the step-off: no reconnect on weight 0, the ESP32 flags it, the record follows the next weigh-in', async () => {
     const quick: WeighIn = { ...ALEX_WEIGH_IN, settle: 3_500, off: 5_000, final: 8_500 };
