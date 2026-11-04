@@ -270,8 +270,8 @@ class TestResultTimer(unittest.TestCase):
 
     def test_wedged_busy_expires_at_hard_cap(self):
         self.timer.start(0)
-        self.assertFalse(self.timer.expired(44999, busy=True))
-        self.assertTrue(self.timer.expired(45000, busy=True))
+        self.assertFalse(self.timer.expired(59999, busy=True))
+        self.assertTrue(self.timer.expired(60000, busy=True))
 
     def test_session_grace_survives_tick_wrap(self):
         start = _TICKS_MAX - 10000
@@ -286,7 +286,8 @@ class TestResultTimer(unittest.TestCase):
         start = _TICKS_MAX - 10000
         with mock.patch.object(ble_bridge, "_ticks_diff", _wrapping_ticks_diff):
             self.timer.start(start)
-            self.assertTrue(self.timer.expired((start + 45000) & _TICKS_MAX, busy=True))
+            self.assertFalse(self.timer.expired((start + 59999) & _TICKS_MAX, busy=True))
+            self.assertTrue(self.timer.expired((start + 60000) & _TICKS_MAX, busy=True))
 
     def test_elapsed_is_none_when_idle(self):
         self.assertIsNone(self.timer.elapsed(5000))

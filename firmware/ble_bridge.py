@@ -41,7 +41,7 @@ PROBLEM_BEEP = (400, 500, 2)
 # The result beep may also come this long after a scale connection ends,
 # and the problem sound plays at the latest this long after the start beep.
 RESULT_AFTER_SESSION_MS = 3000
-RESULT_HARD_CAP_MS = 45000
+RESULT_HARD_CAP_MS = 60000
 
 try:
     from time import ticks_diff as _ticks_diff

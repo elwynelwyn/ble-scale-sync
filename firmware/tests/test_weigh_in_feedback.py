@@ -176,7 +176,7 @@ class WeighInFeedbackTest(unittest.TestCase):
         self.main._scan_paused = True
         self.main._busy = True
         self.beeps.clear()
-        self._run_watchdog(89)
+        self._run_watchdog(119)
         self.assertEqual(self.beeps, [])
         self._run_watchdog(2)
         self.assertEqual(self.beeps, [(400, 500, 2)])
