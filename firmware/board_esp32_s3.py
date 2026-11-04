@@ -21,11 +21,12 @@ SCAN_DURATION_MS = 8000
 # Large PSRAM — generous scan buffer
 MAX_SCAN_ENTRIES = 500
 
-# GATT connect tuning (#139). Ample PSRAM, so keep one long connect/scan window
-# (matches the historical behavior for short-burst advertisers like Eufy P2 Pro).
-CONNECT_TIMEOUT_MS = 15000
-CONNECT_SCAN_MS = 15000
-CONNECT_RETRIES = 1
+# GATT connect tuning (#139). A healthy connect to a continuously advertising
+# scale takes 2-4 s, so a short window plus a retry recovers from a hung attempt
+# within ~7 s instead of waiting out one long window.
+CONNECT_TIMEOUT_MS = 6000
+CONNECT_SCAN_MS = 6000
+CONNECT_RETRIES = 2
 
 # Pre-connect IDF-heap guard floors (#139). Default 0 keeps the gate at the
 # always-on crash floor; this PSRAM board has ample IDF headroom so it never
