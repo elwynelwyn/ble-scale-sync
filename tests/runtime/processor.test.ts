@@ -1200,6 +1200,77 @@ describe('processReading: out_of_range', () => {
   });
 });
 
+describe('processReading: a live weigh-in sent again by a scale still on', () => {
+  const NOW = new Date('2026-10-19T07:00:00Z');
+  const opts = { getExportersForUser: () => [fakeExporter('file')] };
+  const live = (weight: number): RawReading => rawReading({ weight, impedance: 480 });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** One live weigh-in for `weight`, then `next` after `afterMs`; the display is reset in between. */
+  async function twice(weight: number, next: number, afterMs: number) {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], { display });
+    await processReading(ctx, live(weight), opts);
+    vi.mocked(dispatchExports).mockClear();
+    display.beep.mockClear();
+    vi.setSystemTime(NOW.getTime() + afterMs);
+    await processReading(ctx, live(next), opts);
+    return display;
+  }
+
+  it('skips the same weigh-in streamed again 5 s later, without a beep', async () => {
+    const display = await twice(85, 85.05, 5_000);
+    expect(dispatchExports).not.toHaveBeenCalled();
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
+  it('exports and cues a weight 0.5 kg away 5 s later: a new weigh-in', async () => {
+    const display = await twice(85, 85.5, 5_000);
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+  });
+
+  it('exports the same weight 90 s later as a new weigh-in', async () => {
+    const display = await twice(85, 85, 90_000);
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+  });
+
+  it('exports a different user 5 s later', async () => {
+    const display = await twice(85, 60, 5_000);
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchExports).mock.calls[0][2]?.userSlug).toBe('mom');
+    expect(display.beep).toHaveBeenCalledExactlyOnceWith(1200, 200, 2);
+  });
+
+  it('skips the repeat after a restart, from the restored anchor', async () => {
+    const display = fakeDisplay();
+    const ctx = makeCtx([dad, mom], {
+      display,
+      saved: { dad: { weight: 85, time: new Date(NOW.getTime() - 5_000) } },
+    });
+    await processReading(ctx, live(85), opts);
+    expect(dispatchExports).not.toHaveBeenCalled();
+    expect(display.beep).not.toHaveBeenCalled();
+  });
+
+  it('skips the repeat in single-user mode too', async () => {
+    const ctx = makeCtx([dad]);
+    await processReading(ctx, live(85), { singleUserExporters: [fakeExporter('file')] });
+    vi.setSystemTime(NOW.getTime() + 5_000);
+    await processReading(ctx, live(85), { singleUserExporters: [fakeExporter('file')] });
+    expect(dispatchExports).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('failed exports are queued for a later cycle (#412)', () => {
   let dir: string;
   let queuePath: string;

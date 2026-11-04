@@ -19,6 +19,7 @@ import { enqueue } from './export-queue.js';
 import { exporterSlot } from './exporter-slot.js';
 import { LOG_METRIC_KEYS } from '../exporters/metrics.js';
 import { isUsableAnchorTime, persistReplayAnchor } from './replay-anchors.js';
+import { POST_READING_RECONNECT_MS } from '../ble/types.js';
 import {
   HISTORY_WINDOW_MS,
   isHistoricalReading,
@@ -379,6 +380,29 @@ function anchorTime(frame: Frame): Date {
 }
 
 /**
+ * Drop a live frame that is the user's last exported live weigh-in again, and
+ * say so. A scale still on after its reading is connected again
+ * (POST_READING_RECONNECT_MS) and may stream that weigh-in live once more. Same
+ * weight within DEDUP_KG_TOLERANCE, dated within the reconnect window of the
+ * anchor on the clock the anchor was dated by. Impedance is not compared: a
+ * repeat that settled without its impedance frame is still the same weigh-in.
+ */
+function skipLiveRepeat(ctx: AppContext, user: UserConfig, frame: Frame, prefix: string): boolean {
+  const weight = ctx.lastExportedWeights.get(user.slug);
+  const anchorAt = ctx.lastExportedAt.get(user.slug);
+  if (weight === undefined || anchorAt === undefined) return false;
+  if (Math.abs(frame.reading.weight - weight) >= DEDUP_KG_TOLERANCE) return false;
+  const apartMs = Math.abs(anchorTime(frame).getTime() - anchorAt.getTime());
+  if (apartMs > POST_READING_RECONNECT_MS) return false;
+  const p = prefix ? `${prefix} ` : '';
+  log.info(
+    `${p}Skipping ${fmtWeight(frame.reading.weight, ctx.weightUnit)}: the same weigh-in ` +
+      `as the one exported ${(apartMs / 1000).toFixed(1)} s earlier, sent again by the scale.`,
+  );
+  return true;
+}
+
+/**
  * Remember the weight of a LIVE weigh-in that was exported (E-03, E-09).
  *
  * Three readers depend on it: the replay dedup, the matcher's tie-break and
@@ -546,6 +570,7 @@ async function processSingleUser(
     // Before the update check and before any export, so a skipped reading
     // leaves nothing behind but the log line and the error beep.
     if (skipOutOfRange(ctx, user, frame.reading.weight, '', true)) continue;
+    if (skipLiveRepeat(ctx, user, frame, '')) continue;
     items.push({ frame, user });
   }
   if (items.length === 0) return true;
@@ -653,7 +678,10 @@ async function processMultiUser(
       // last_known_weight write. A match is not an endorsement of the weight:
       // tier 4 in particular matches by proximity to a remembered weight, not
       // by any range containing this one (#395).
-      if (!skipOutOfRange(ctx, user, latestLive.reading.weight, prefix, true)) {
+      if (
+        !skipOutOfRange(ctx, user, latestLive.reading.weight, prefix, true) &&
+        !skipLiveRepeat(ctx, user, latestLive, prefix)
+      ) {
         log.info(`${prefix} Matched (tier: ${match.tier})`);
         ctx.display?.beep(1200, 200, 2);
         const drift = detectWeightDrift(user, latestLive.reading.weight);
