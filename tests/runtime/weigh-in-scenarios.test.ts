@@ -444,13 +444,23 @@ interface Exported {
   historical: boolean;
 }
 
-function makeConfig(outOfRange: AppConfig['out_of_range']): AppConfig {
+/**
+ * The deployed shape: ranges 79-103 and 50-75 kg, no last_known_weight in the
+ * file, and config.yaml read-only, so the last_known_weight write fails.
+ */
+const DEPLOYED_USERS: UserConfig[] = [
+  { ...ALEX, weight_range: { min: 79, max: 103 }, last_known_weight: null },
+  { ...SAM, weight_range: { min: 50, max: 75 }, last_known_weight: null },
+];
+const READ_ONLY_CONFIG = path.join(os.tmpdir(), 'weigh-in-scenarios-missing', 'config.yaml');
+
+function makeConfig(outOfRange: AppConfig['out_of_range'], deployed: boolean): AppConfig {
   return {
     version: 1,
     scale: { weight_unit: 'kg', height_unit: 'cm', display_unit: 'weight_unit' },
     unknown_user: 'log',
     out_of_range: outOfRange,
-    users: [{ ...ALEX }, { ...SAM }],
+    users: (deployed ? DEPLOYED_USERS : [ALEX, SAM]).map((u) => ({ ...u })),
     update_check: false,
   };
 }
@@ -458,10 +468,15 @@ function makeConfig(outOfRange: AppConfig['out_of_range']): AppConfig {
 interface ServerOptions {
   anchorsPath?: string;
   outOfRange?: AppConfig['out_of_range'];
+  deployed?: boolean;
 }
 
-function makeCtx({ anchorsPath, outOfRange = 'warn' }: ServerOptions): AppContext {
-  const config = makeConfig(outOfRange);
+function makeCtx({
+  anchorsPath,
+  outOfRange = 'warn',
+  deployed = false,
+}: ServerOptions): AppContext {
+  const config = makeConfig(outOfRange, deployed);
   const weights = new Map<string, number>();
   const times = new Map<string, Date>();
   if (anchorsPath) restoreReplayAnchors(anchorsPath, config.users, weights, times);
@@ -471,8 +486,8 @@ function makeCtx({ anchorsPath, outOfRange = 'warn' }: ServerOptions): AppContex
     weightUnit: 'kg',
     dryRun: false,
     mqttProxy: MQTT_PROXY,
-    configSource: 'env',
-    configPath: undefined,
+    configSource: deployed ? 'yaml' : 'env',
+    configPath: deployed ? READ_ONLY_CONFIG : undefined,
     bleHandler: 'mqtt-proxy',
     bleAdapter: undefined,
     adapterPrivacy: false,
@@ -645,23 +660,18 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     await server.stop();
   });
 
-  // PostReadingWindow only changes how a reconnect without a weigh-in is
-  // logged; nothing dedups a live reading, so a scale that streamed the
-  // finished weigh-in live again would be exported and cued twice.
-  it.fails(
-    '3b. the person stays on and the scale streams the weigh-in live again: one cue',
-    async () => {
-      setUp([{ ...ALEX_WEIGH_IN, off: 40_000 }], { resendLive: true });
-      const exports: Exported[] = [];
-      const server = await startServer(exports);
+  it('3b. the person stays on and the scale streams the weigh-in live again: one cue', async () => {
+    setUp([{ ...ALEX_WEIGH_IN, off: 40_000 }], { resendLive: true });
+    const exports: Exported[] = [];
+    const server = await startServer(exports);
 
-      await run(60_000);
+    await run(60_000);
 
-      expect(exports).toHaveLength(1);
-      expectOneCuePerWeighIn(1);
-      await server.stop();
-    },
-  );
+    expect(esp.connects.length).toBeGreaterThan(2);
+    expect(exports).toEqual([{ slug: 'alex', kg: 82.4, historical: false }]);
+    expectOneCuePerWeighIn(1);
+    await server.stop();
+  });
 
   it('4. back-to-back: a second person after weight-0 adverts gets their own beeps and export', async () => {
     const sam: WeighIn = {
@@ -848,5 +858,95 @@ describe('weigh-in scenarios: T9146 behind an ESP32 bridge', () => {
     expect(exports).toEqual([{ slug: 'alex', kg: 120.6, historical: false }]);
     expectOneCuePerWeighIn(1);
     await server.stop();
+  });
+
+  /**
+   * The deployed config: no last_known_weight in a read-only config.yaml, and
+   * unknown_user log. A saved live weigh-in still sets last_known_weight in
+   * memory, so the next weight outside both ranges is matched to the closest
+   * user (tier 4) and unknown_user is never asked; out_of_range decides.
+   */
+  describe('9. unknown people with the deployed config', () => {
+    const weighIn = (kg: number, on: number): WeighIn => ({
+      kg,
+      ohm: 500,
+      on,
+      settle: on + 3_000,
+      off: on + 5_000,
+      final: on + 9_000,
+    });
+    const PEOPLE = [
+      weighIn(88, 1_500),
+      weighIn(62, 30_000),
+      weighIn(77, 60_000),
+      weighIn(120, 90_000),
+    ];
+    const KNOWN = [
+      { slug: 'alex', kg: 88, historical: false },
+      { slug: 'sam', kg: 62, historical: false },
+    ];
+    let dir: string;
+
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weigh-in-scenarios-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('a: out_of_range warn (the default): 77 and 120 kg go to Alex with a 2-beep', async () => {
+      setUp(PEOPLE);
+      const exports: Exported[] = [];
+      const server = await startServer(exports, { deployed: true });
+
+      await run(105_000);
+
+      expect(esp.serverCues.map((c) => c.repeat)).toEqual([2, 2, 2, 2]);
+      expect(exports).toEqual([
+        ...KNOWN,
+        { slug: 'alex', kg: 77, historical: false },
+        { slug: 'alex', kg: 120, historical: false },
+      ]);
+      await server.stop();
+    });
+
+    it('b: out_of_range skip: 77 and 120 kg are never exported, one 3-beep each', async () => {
+      setUp(PEOPLE);
+      const exports: Exported[] = [];
+      const anchorsPath = path.join(dir, '.last-live-weigh-ins.json');
+      const server = await startServer(exports, {
+        deployed: true,
+        outOfRange: 'skip',
+        anchorsPath,
+      });
+
+      await run(105_000);
+
+      expect(esp.serverCues.map((c) => c.repeat)).toEqual([2, 2, 3, 3]);
+      expect(exports).toEqual(KNOWN);
+      expectOneCuePerWeighIn(4);
+      await server.stop();
+    });
+
+    it('c: out_of_range skip, restarted with the anchors restored: the same', async () => {
+      setUp(PEOPLE);
+      const exports: Exported[] = [];
+      const anchorsPath = path.join(dir, '.last-live-weigh-ins.json');
+      const opts: ServerOptions = { deployed: true, outOfRange: 'skip', anchorsPath };
+      let server = await startServer(exports, opts);
+      await run(45_000);
+      expect(exports).toEqual(KNOWN);
+
+      await server.stop();
+      _resetProxyState();
+      server = await startServer(exports, opts);
+      await run(60_000);
+
+      expect(esp.serverCues.map((c) => c.repeat)).toEqual([2, 2, 3, 3]);
+      expect(exports).toEqual(KNOWN);
+      expectOneCuePerWeighIn(4);
+      await server.stop();
+    });
   });
 });
