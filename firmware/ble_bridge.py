@@ -613,9 +613,12 @@ class BleBridge:
         budget_exhausted = False
         for probe, use_type in enumerate(_addr_type_probe_order(addr_type)):
             aioble_type = aioble.ADDR_RANDOM if use_type else aioble.ADDR_PUBLIC
-            device = aioble.Device(aioble_type, addr_bytes)
             type_retries = retries if probe == 0 else 1
             for attempt in range(1, type_retries + 1):
+                # A Device keeps the DeviceConnection of a timed-out attempt, and
+                # reconnecting through it returns that dead connection, so every
+                # attempt gets a fresh Device.
+                device = aioble.Device(aioble_type, addr_bytes)
                 attempt_timeout_ms = timeout_ms
                 attempt_scan_ms = scan_ms
                 if budget_ms is not None:

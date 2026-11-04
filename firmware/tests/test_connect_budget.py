@@ -140,6 +140,33 @@ class ConnectBudgetTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertLessEqual(self.clock.now, 8000)
 
+    def test_retry_after_a_timeout_uses_a_fresh_device(self):
+        # aioble keeps a timed-out attempt's DeviceConnection on the Device and
+        # hands it back on the next connect(), which then fails discovery.
+        self.mod.board.CONNECT_RETRIES = 2
+        clock, instances = self.clock, []
+
+        class _StickyDevice:
+            def __init__(self, addr_type, addr_bytes):
+                self.stale = False
+                instances.append(self)
+
+            async def connect(self, timeout_ms=None, scan_duration_ms=None):
+                if self.stale:
+                    raise TypeError("can't convert NoneType to int")
+                if len(instances) == 1:
+                    self.stale = True
+                    clock.now += timeout_ms
+                    raise asyncio.TimeoutError()
+                clock.now += 3000
+                return _Conn()
+
+        self.aioble.Device = _StickyDevice
+        bridge = self.mod.BleBridge()
+        result = asyncio.run(bridge.connect("FF:03:00:53:D6:4D", 0, budget_ms=25000))
+        self.assertEqual(result, {"chars": []})
+        self.assertEqual(len(instances), 2)
+
     def test_without_a_budget_the_board_timeouts_are_unchanged(self):
         bridge = self.mod.BleBridge()
         asyncio.run(bridge.connect("FF:03:00:53:D6:4D", 1))
