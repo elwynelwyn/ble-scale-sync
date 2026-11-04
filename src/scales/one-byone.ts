@@ -35,6 +35,13 @@ const STATUS_OVERWEIGHT = 0x02;
  */
 const STORED_ONLY_GRACE_MS = 2_000;
 
+/**
+ * A weigh-in is complete, and stored, this long after it started at the
+ * latest: 7.5 to 10.2 s from the first weight to the final frame in
+ * production, with room for a slow one.
+ */
+const MEASUREMENT_WINDOW_MS = 20_000;
+
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
 /**
@@ -48,10 +55,10 @@ class OneByoneSession {
   /** The scale sent f2 00 after its stored records. */
   historyEnded = false;
   /**
-   * A stored record is dated at or after the connect decision, so it is the
+   * A stored record is dated at or after the weigh-in's start, so it is the
    * weigh-in this connect was made for: that one completes seconds after the
-   * advert that triggered the connect, while any earlier person's record is
-   * dated before it. Stamps are whole seconds on a clock set from the host.
+   * advert that started it, while any earlier person's record is dated before
+   * it. Stamps are whole seconds on a clock set from the host.
    */
   weighInStored = false;
   /** A live frame showed a weight: somebody is on the scale. */
@@ -233,8 +240,8 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
         return null;
       }
       this.s.frameSettled = true;
-      const decided = this.ctx?.connectDecidedAt;
-      if (decided && timestamp.getTime() >= decided.getTime()) {
+      const started = this.ctx?.weighInStartedAt;
+      if (started && timestamp.getTime() >= started.getTime()) {
         this.s.weighInStored = true;
       }
       return { weight, impedance, timestamp, fromMemory: true };
@@ -248,15 +255,20 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
   }
 
   /**
-   * End shortly after the stored records only when the weigh-in this connect
-   * was made for is among them: then no live frame will come. A connect made
-   * mid-measurement gets no live frames and only the final one, seconds after
-   * the stored records, so any other session waits for it or for the scale.
+   * When to end after the stored records. With the weigh-in this connect was
+   * made for among them, no live frame will come: shortly. A connect made
+   * mid-measurement gets no live frames, only the final one, so otherwise wait
+   * until the weigh-in must have completed (MEASUREMENT_WINDOW_MS after its
+   * start); a final arriving before that ends the session as usual. Live
+   * weight frames, or no known start, leave it to the final or the scale.
    */
   sessionDoneAfterMs(): number | undefined {
-    return this.s.historyEnded && this.s.weighInStored && !this.s.liveWeight
-      ? STORED_ONLY_GRACE_MS
-      : undefined;
+    if (!this.s.historyEnded || this.s.liveWeight) return undefined;
+    if (this.s.weighInStored) return STORED_ONLY_GRACE_MS;
+    const started = this.ctx?.weighInStartedAt;
+    if (!started) return undefined;
+    const windowLeft = started.getTime() + MEASUREMENT_WINDOW_MS - Date.now();
+    return Math.max(STORED_ONLY_GRACE_MS, windowLeft);
   }
 
   /** A settled weight completes the reading; frames still measuring only feed the live display. */

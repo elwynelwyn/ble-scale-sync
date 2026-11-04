@@ -3647,7 +3647,7 @@ describe('handler-mqtt-proxy', () => {
 
     describe('step-off time on the reading', () => {
       /** Answer the connect, and the f2 00 request with one final live frame. */
-      async function startScale(): Promise<InstanceType<typeof ReadingWatcher>> {
+      async function startScale(failFirst = false): Promise<InstanceType<typeof ReadingWatcher>> {
         const watcher = new ReadingWatcher(
           { ...MQTT_PROXY_CONFIG, auto_connect: false },
           applyForcedAdapter(realAdapters, '1byone (Eufy)'),
@@ -3656,8 +3656,12 @@ describe('handler-mqtt-proxy', () => {
         );
         await watcher.start();
         const origPublish = mockClient.publishAsync;
+        let failNext = failFirst;
         mockClient.publishAsync = vi.fn(async (topic: string, payload?: string | Buffer) => {
-          if (topic === `${PREFIX}/connect`) {
+          if (topic === `${PREFIX}/connect` && failNext) {
+            failNext = false;
+            queueMicrotask(() => mockClient._simulateMessage(`${PREFIX}/error`, 'connect failed'));
+          } else if (topic === `${PREFIX}/connect`) {
             queueMicrotask(() =>
               mockClient._simulateMessage(
                 `${PREFIX}/connected`,
@@ -3687,6 +3691,67 @@ describe('handler-mqtt-proxy', () => {
         });
         return watcher;
       }
+
+      /** The weigh-in start each session's adapter is given. */
+      function captureWeighInStart(): Date[] {
+        const target = realAdapters.find((a) => a.name === '1byone (Eufy)')!;
+        const original = target.onConnected!.bind(target);
+        const seen: Date[] = [];
+        vi.spyOn(target, 'onConnected').mockImplementation(async (ctx) => {
+          if (ctx.weighInStartedAt) seen.push(ctx.weighInStartedAt);
+          await original(ctx);
+        });
+        return seen;
+      }
+      const pause = () => new Promise((r) => setTimeout(r, 40));
+
+      it('keeps the weigh-in start of the first connect decision across a failed connect', async () => {
+        vi.spyOn(bleLog, 'warn').mockImplementation(() => {});
+        const seen = captureWeighInStart();
+        const watcher = await startScale(true);
+        const first = Date.now();
+        scan(t9146Advert(frame(7240)));
+        await pause();
+        const retry = Date.now();
+        scan(t9146Advert(frame(7240)));
+
+        await watcher.nextReading();
+        expect(seen).toHaveLength(1);
+        expect(seen[0].getTime()).toBeGreaterThanOrEqual(first);
+        expect(seen[0].getTime()).toBeLessThan(retry);
+        await watcher.stop();
+      });
+
+      it('starts a new weigh-in after a weight-0 advert', async () => {
+        vi.spyOn(bleLog, 'warn').mockImplementation(() => {});
+        const seen = captureWeighInStart();
+        const watcher = await startScale(true);
+        scan(t9146Advert(frame(7240)));
+        await pause();
+        scan(t9146Advert(frame(0)));
+        await pause();
+        const again = Date.now();
+        scan(t9146Advert(frame(7240)));
+
+        await watcher.nextReading();
+        expect(seen[0].getTime()).toBeGreaterThanOrEqual(again);
+        await watcher.stop();
+      });
+
+      it('starts a new weigh-in after a reading', async () => {
+        const seen = captureWeighInStart();
+        const watcher = await startScale();
+        scan(t9146Advert(frame(7240)));
+        await watcher.nextReading();
+        await pause();
+        const next = Date.now();
+        scan(t9146Advert(frame(7240)));
+
+        await watcher.nextReading();
+        expect(seen).toHaveLength(2);
+        expect(seen[1].getTime()).toBeGreaterThanOrEqual(next);
+        await watcher.stop();
+      });
 
       it('carries the time of the last weight-0 advert', async () => {
         const watcher = await startScale();

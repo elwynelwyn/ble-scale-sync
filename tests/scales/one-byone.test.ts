@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { OneByoneAdapter, OneByoneNewAdapter } from '../../src/scales/one-byone.js';
 import {
   mockPeripheral,
@@ -305,17 +305,19 @@ describe('OneByoneAdapter', () => {
   describe('sessionDoneAfterMs()', () => {
     // RECORD is stamped 2026-07-04 16:07:38 on the scale's clock.
     const STAMP = new Date(2026, 6, 4, 16, 7, 38).getTime();
-    async function connectAt(adapter: OneByoneAdapter, decidedAt: number) {
-      vi.useFakeTimers();
-      try {
-        const done = adapter.onConnected(
-          makeConnectionContext({ connectDecidedAt: new Date(decidedAt) }),
-        );
-        await vi.advanceTimersByTimeAsync(1000);
-        await done;
-      } finally {
-        vi.useRealTimers();
-      }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Connect for a weigh-in that started at `startedAt`; the clock then reads `startedAt + sinceMs`. */
+    async function connectAt(adapter: OneByoneAdapter, startedAt: number, sinceMs = 5_000) {
+      vi.useFakeTimers({ now: startedAt + sinceMs - 1_000 });
+      const done = adapter.onConnected(
+        makeConnectionContext({ weighInStartedAt: new Date(startedAt) }),
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      await done;
     }
 
     it('is 2 s after the marker when the weigh-in this connect was made for is stored', async () => {
@@ -327,30 +329,46 @@ describe('OneByoneAdapter', () => {
       expect(adapter.sessionDoneAfterMs()).toBe(2_000);
     });
 
-    it('is undefined for an empty memory: the weigh-in comes later as the final frame', async () => {
+    it('waits out the 20 s measurement window after an empty dump', async () => {
       const adapter = makeAdapter();
-      await connectAt(adapter, STAMP);
+      await connectAt(adapter, STAMP, 5_000);
       adapter.parseNotification(hex('f200'));
-      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+      expect(adapter.sessionDoneAfterMs()).toBe(15_000);
     });
 
-    it('counts a record stamped in the same second as the connect decision', async () => {
+    it('is 2 s after the marker once the measurement window has passed', async () => {
       const adapter = makeAdapter();
-      await connectAt(adapter, STAMP);
+      await connectAt(adapter, STAMP, 25_000);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBe(2_000);
+    });
+
+    it('does not count a record stamped in the second before a start with millis', async () => {
+      // The start is 400 ms into the record's second; the record is the earlier weigh-in.
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP + 400, 2_000);
+      adapter.parseNotification(RECORD);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBe(18_000);
+    });
+
+    it('counts a record stamped in the second after a start with millis', async () => {
+      const adapter = makeAdapter();
+      await connectAt(adapter, STAMP - 600, 2_000);
       adapter.parseNotification(RECORD);
       adapter.parseNotification(hex('f200'));
       expect(adapter.sessionDoneAfterMs()).toBe(2_000);
     });
 
-    it('is undefined for a record stamped before the connect decision (a quick swap)', async () => {
+    it('waits out the window for a record stamped before the start (a quick swap)', async () => {
       const adapter = makeAdapter();
-      await connectAt(adapter, STAMP + 1_000);
+      await connectAt(adapter, STAMP + 1_000, 3_000);
       adapter.parseNotification(RECORD);
       adapter.parseNotification(hex('f200'));
-      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+      expect(adapter.sessionDoneAfterMs()).toBe(17_000);
     });
 
-    it('is undefined without a connect decision time', async () => {
+    it('is undefined without a weigh-in start', async () => {
       const adapter = makeAdapter();
       await connect(adapter);
       adapter.parseNotification(RECORD);
@@ -413,7 +431,7 @@ describe('OneByoneAdapter', () => {
       steps: steps.map(([atMs, h]) => ({ atMs, dir: 'rx', hex: h })),
     });
     /** Connect decided 5 s before the session start, as the advert came in. */
-    const opts = { now: NOW, connectDecidedAtMs: -5_000 };
+    const opts = { now: NOW, weighInStartedAtMs: -5_000 };
 
     it('hands the just-stored weigh-in over 2 s after the marker', async () => {
       const r = await replaySession(
@@ -458,8 +476,39 @@ describe('OneByoneAdapter', () => {
       expect(r.history).toHaveLength(1);
     });
 
-    it('keeps an empty-memory session open until the scale drops the link', async () => {
+    it('ends an empty-memory session when the measurement window closes (production R8)', async () => {
       const r = await replaySession(makeAdapter(), trace([[300, 'f200']]), opts);
+      expect(r.settled).toEqual({
+        by: 'error',
+        atMs: 15_000,
+        error: 'Scale done sending without a reading',
+      });
+    });
+
+    it('hands over only older records when the window closes without a final', async () => {
+      const r = await replaySession(
+        makeAdapter(),
+        trace([
+          [300, rec(-15_000)],
+          [400, 'f200'],
+          [2_400, 'f300'],
+        ]),
+        opts,
+      );
+      expect(r.settled).toEqual({ by: 'reading', atMs: 15_000 });
+      expect(r.reading!.fromMemory).toBe(true);
+    });
+
+    it('ends 2 s after a late marker when the window has already closed', async () => {
+      const r = await replaySession(makeAdapter(), trace([[300, 'f200']]), {
+        now: NOW,
+        weighInStartedAtMs: -25_000,
+      });
+      expect(r.settled.atMs).toBe(2_300);
+    });
+
+    it('keeps upstream behaviour without a weigh-in start (autonomous connect)', async () => {
+      const r = await replaySession(makeAdapter(), trace([[300, 'f200']]), { now: NOW });
       expect(r.settled).toEqual({
         by: 'error',
         atMs: 30_000,
