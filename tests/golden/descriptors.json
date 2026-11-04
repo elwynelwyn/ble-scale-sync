@@ -922,7 +922,8 @@
       "onConnected",
       "onSessionEnd",
       "isFinal",
-      "readyToConnect"
+      "readyToConnect",
+      "sessionDoneAfterMs"
     ]
   },
   {

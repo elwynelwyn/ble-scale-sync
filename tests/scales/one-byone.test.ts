@@ -7,7 +7,7 @@ import {
   assertPayloadRanges,
 } from '../helpers/scale-test-utils.js';
 import { uuid16, xorChecksum, WEIGHT_ONLY_HOLD_MS } from '../../src/scales/body-comp-helpers.js';
-import { hex } from '../helpers/replay/trace.js';
+import { hex, type Trace } from '../helpers/replay/trace.js';
 import { replaySession } from '../helpers/replay/session.js';
 import { session as t9146 } from '../fixtures/onebyone/t9146.js';
 
@@ -259,6 +259,123 @@ describe('OneByoneAdapter', () => {
       expect(makeAdapter().readyToConnect(mockPeripheral('eufy T9146', [uuid16(0xfff0)]))).toBe(
         true,
       );
+    });
+  });
+
+  describe('sessionDoneAfterMs()', () => {
+    it('is undefined until the end-of-history marker, then 2 s while nobody is on', async () => {
+      const adapter = makeAdapter();
+      await connect(adapter);
+      adapter.parseNotification(RECORD);
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBe(2_000);
+      adapter.parseNotification(withChecksum(MEASURING, (b) => b.writeUInt16LE(0, 3)));
+      expect(adapter.sessionDoneAfterMs()).toBe(2_000);
+    });
+
+    it('is undefined once a live frame showed a weight, before or after the marker', async () => {
+      const adapter = makeAdapter();
+      await connect(adapter);
+      adapter.parseNotification(MEASURING);
+      adapter.parseNotification(hex('f200'));
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+    });
+
+    it('starts over on the next connect', async () => {
+      const adapter = makeAdapter();
+      await connect(adapter);
+      adapter.parseNotification(hex('f200'));
+      await connect(adapter);
+      expect(adapter.sessionDoneAfterMs()).toBeUndefined();
+    });
+  });
+
+  describe('stored-only sessions through waitForRawReading', () => {
+    /** A live 0xCF frame as hex. */
+    function live(kg: number, ohm = 0, status = 0x01): string {
+      const buf = Buffer.alloc(11);
+      buf[0] = 0xcf;
+      buf.writeUInt16LE(Math.round(ohm * 10), 1);
+      buf.writeUInt16LE(Math.round(kg * 100), 3);
+      buf[8] = status === 0x00 ? 1 : 0;
+      buf[9] = status;
+      buf[10] = xorChecksum(buf, 0, 10);
+      return buf.toString('hex');
+    }
+    const REC = 'cfb81052211d13cd0000d707ea0704100726';
+    /** The scale holds the link about 30 s after a stored-only dump. */
+    const trace = (steps: [number, string][]): Trace => ({
+      provenance: 'derived',
+      source: 'shaped on production T9146 session logs',
+      disconnectAtMs: 30_000,
+      steps: steps.map(([atMs, h]) => ({ atMs, dir: 'rx', hex: h })),
+    });
+
+    it('hands the stored record over 2 s after the marker instead of at the disconnect', async () => {
+      const r = await replaySession(
+        makeAdapter(),
+        trace([
+          [400, REC],
+          [500, 'f200'],
+        ]),
+      );
+      expect(r.settled).toEqual({ by: 'reading', atMs: 2_500 });
+      expect(r.reading!.fromMemory).toBe(true);
+      expect(r.writes.map((w) => w.hex)).toContain('f201');
+    });
+
+    it('ends an empty-memory session 2 s after the marker, with no reading', async () => {
+      const r = await replaySession(makeAdapter(), trace([[300, 'f200']]));
+      expect(r.settled).toEqual({
+        by: 'error',
+        atMs: 2_300,
+        error: 'Scale sent no stored records and nobody stepped on',
+      });
+    });
+
+    it('keeps waiting when weight-0 live frames follow the marker', async () => {
+      const r = await replaySession(
+        makeAdapter(),
+        trace([
+          [300, 'f200'],
+          [800, live(0)],
+          [1_300, live(0)],
+        ]),
+      );
+      expect(r.settled.atMs).toBe(2_300);
+    });
+
+    it('waits for the live weigh-in when somebody steps on within the grace', async () => {
+      const r = await replaySession(
+        makeAdapter(),
+        trace([
+          [400, REC],
+          [500, 'f200'],
+          [2_000, live(42.1)],
+          [4_000, live(71.3)],
+          [9_000, live(71.3, 455.5, 0x00)],
+        ]),
+      );
+      expect(r.settled).toEqual({ by: 'reading', atMs: 9_000 });
+      expect(r.reading!.weight).toBe(71.3);
+      expect(r.history).toHaveLength(1);
+    });
+
+    it('waits for the live weigh-in when a live weight came before the stored records', async () => {
+      const r = await replaySession(
+        makeAdapter(),
+        trace([
+          [0, live(20.8)],
+          [100, REC],
+          [400, live(20.8)],
+          [450, 'f200'],
+          [4_000, live(71.3)],
+          [10_000, live(71.3, 455.5, 0x00)],
+        ]),
+      );
+      expect(r.settled).toEqual({ by: 'reading', atMs: 10_000 });
+      expect(r.history).toHaveLength(1);
     });
   });
 

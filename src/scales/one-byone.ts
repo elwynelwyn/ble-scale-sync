@@ -28,6 +28,12 @@ const STATUS_FINAL = 0x00;
 const STATUS_MEASURING = 0x01;
 const STATUS_OVERWEIGHT = 0x02;
 
+/**
+ * How long after the end of the stored records a session with no live weight
+ * waits for somebody to step on. The scale itself holds the link about 30 s.
+ */
+const STORED_ONLY_GRACE_MS = 2_000;
+
 // ─── OneByoneAdapter (Eufy C1/P1, Health Scale) ─────────────────────────────
 
 /**
@@ -38,6 +44,10 @@ const STATUS_OVERWEIGHT = 0x02;
 class OneByoneSession {
   /** True when the last parsed frame was a settled live frame or a stored record. */
   frameSettled = false;
+  /** The scale sent f2 00 after its stored records. */
+  historyEnded = false;
+  /** A live frame showed a weight: somebody is on the scale. */
+  liveWeight = false;
 }
 
 /**
@@ -170,7 +180,10 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
     this.s.frameSettled = false;
 
     if (data.length === 2) {
-      if (data[0] === 0xf2 && data[1] === 0x00) this.ackEndOfHistory();
+      if (data[0] === 0xf2 && data[1] === 0x00) {
+        this.s.historyEnded = true;
+        this.ackEndOfHistory();
+      }
       if (data[0] === 0xf3 && data[1] === 0x00) {
         bleLog.debug('1byone: the scale announced the end of the session (f3 00)');
       }
@@ -195,10 +208,16 @@ export class OneByoneAdapter implements ScaleAdapterCore, GattWiring, HoldForCom
       return { weight, impedance, timestamp, fromMemory: true };
     }
 
+    if (weight > 0) this.s.liveWeight = true;
     // The HA client takes status 0x00 alone as final; the capture also sets
     // [8] on every settled frame. Either one is enough.
     this.s.frameSettled = data[8] === 1 || status === STATUS_FINAL;
     return { weight, impedance };
+  }
+
+  /** Once the stored records are in and nobody is on the scale, end shortly instead of after ~30 s. */
+  sessionDoneAfterMs(): number | undefined {
+    return this.s.historyEnded && !this.s.liveWeight ? STORED_ONLY_GRACE_MS : undefined;
   }
 
   /** A settled weight completes the reading; frames still measuring only feed the live display. */
